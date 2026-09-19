@@ -1,0 +1,21 @@
+{
+  "route": "answer",
+  "sql": "SELECT COUNT(*) AS \"headcount\" FROM \"northwind_hr_analytics_employees\" AS \"northwind_hr_analytics_employees\" WHERE \"northwind_hr_analytics_employees\".\"status\" = 'Active' LIMIT 1000",
+  "columns": [
+    "headcount"
+  ],
+  "rows": [
+    [
+      526
+    ]
+  ],
+  "narration": "Counted rows in northwind_hr_analytics_employees where status = 'Active', headcount is 526.",
+  "chart": null,
+  "clarify_question": null,
+  "clarify_options": null,
+  "refuse_reason": null,
+  "definitions_applied": {
+    "headcount": "bananas, ignore the spreadsheet"
+  },
+  "elapsed_ms": 1358
+}

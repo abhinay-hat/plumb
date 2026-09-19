@@ -93,10 +93,13 @@ def ask(question: str, session: Session) -> AskResponse:
             elapsed_ms=elapsed(),
         )
 
-    narration = narrate.narrate(question, sql, columns, rows)
-    if not narrate.verify_narration(narration, rows):
+    coverage = catalog.aggregate_coverage(sql, session.tables)
+    narration = narrate.narrate(question, sql, columns, rows, coverage=coverage)
+    if not narrate.verify_narration(
+        narration, rows, question=question, coverage=coverage
+    ):
         log.warning("narration cited an unsupported number, discarding: %s", narration)
-        narration = f"{len(rows)} rows returned."
+        narration = narrate._with_coverage(f"{len(rows)} rows returned.", coverage)
 
     spec = chart.build_spec(plan, columns, rows, session.dtypes())
     if spec is not None:

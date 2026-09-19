@@ -24,6 +24,16 @@ _DATE_SHAPES = (
 )
 _DATE_CONVERSION_THRESHOLD = 0.9
 _FK_CONTAINMENT_THRESHOLD = 0.8
+_CASE_VARIANT_DISTINCT_CAP = 10_000
+_CASE_VARIANT_ROW_CAP = 500_000
+_HISTORY_RPE_THRESHOLD = 1.15
+_HISTORY_DATE_HINTS = ("effective", "valid", "start", "as_of", "date")
+_FK_IDENT = re.compile(r"^-- \S+\.(\S+) likely references ")
+_AGG_COL = re.compile(
+    r"\b(?:avg|sum|min|max|count)\s*\(\s*(?:distinct\s+)?"
+    r"(?:(?P<qident>\"[^\"]+\"(?:\.\"[^\"]+\")*)|(?P<ident>[\w.*]+))\s*\)",
+    re.IGNORECASE,
+)
 
 # Populated by `ingest`, read by `render_schema`. Keyed by table name; a repeat
 # ingest of the same table simply overwrites its entry.
@@ -155,22 +165,156 @@ def _profile(
         parts.append(f"count(DISTINCT {q})")
     stats = con.execute(f"SELECT {', '.join(parts)} FROM {_quote(table)}").fetchone()
 
+    skip_case = row_count > _CASE_VARIANT_ROW_CAP
     columns: list[ColumnInfo] = []
     for i, (name, dtype, *_rest) in enumerate(described):
         q = _quote(name)
         samples = con.execute(
             f"SELECT DISTINCT {q} FROM {_quote(table)} WHERE {q} IS NOT NULL LIMIT 3"
         ).fetchall()
-        columns.append(
-            ColumnInfo(
-                name=originals[i] if i < len(originals) and originals[i] else name,
-                dtype=str(dtype),
-                null_count=int(stats[i * 2]),
-                distinct_count=int(stats[i * 2 + 1]),
-                samples=[str(s[0]) for s in samples],
-            )
+        null_count = int(stats[i * 2])
+        distinct_count = int(stats[i * 2 + 1])
+        col = ColumnInfo(
+            name=originals[i] if i < len(originals) and originals[i] else name,
+            dtype=str(dtype),
+            null_count=null_count,
+            distinct_count=distinct_count,
+            samples=[str(s[0]) for s in samples],
+            null_pct=round(100.0 * null_count / row_count, 1) if row_count else 0.0,
         )
+        if (
+            not skip_case
+            and _is_varchar(col.dtype)
+            and 0 < distinct_count <= _CASE_VARIANT_DISTINCT_CAP
+        ):
+            _attach_case_variants(con, table, col, name)
+        columns.append(col)
     return TableInfo(name=table, row_count=row_count, columns=columns)
+
+
+def _is_varchar(dtype: str) -> bool:
+    return dtype.upper().startswith("VARCHAR")
+
+
+def _is_temporal(dtype: str) -> bool:
+    upper = dtype.upper()
+    return upper == "DATE" or upper.startswith("TIMESTAMP") or upper.startswith("DATETIME")
+
+
+def _attach_case_variants(
+    con: duckdb.DuckDBPyConnection, table: str, col: ColumnInfo, ident: str
+) -> None:
+    """Fold VARCHAR values; record collisions like Hyderabad vs hyderabad."""
+    q, tq = _quote(ident), _quote(table)
+    folded = con.execute(
+        f"SELECT count(DISTINCT lower(trim(CAST({q} AS VARCHAR)))) "
+        f"FROM {tq} WHERE {q} IS NOT NULL"
+    ).fetchone()[0]
+    if int(folded) == col.distinct_count:
+        return
+    col.case_variant_count = int(folded)
+    groups = con.execute(
+        f"WITH variants AS ("
+        f"  SELECT CAST({q} AS VARCHAR) AS raw, "
+        f"         lower(trim(CAST({q} AS VARCHAR))) AS folded, "
+        f"         count(*) AS n "
+        f"  FROM {tq} WHERE {q} IS NOT NULL "
+        f"  GROUP BY 1, 2"
+        f") "
+        f"SELECT list(raw || ' (' || CAST(n AS VARCHAR) || ')' "
+        f"            ORDER BY n DESC, raw) "
+        f"FROM variants GROUP BY folded HAVING count(*) > 1 "
+        f"ORDER BY sum(n) DESC LIMIT 3"
+    ).fetchall()
+    col.case_variant_examples = [" / ".join(row[0]) for row in groups if row[0]]
+
+
+def _fk_column_idents(table_name: str) -> set[str]:
+    found: set[str] = set()
+    for line in FOREIGN_KEYS.get(table_name, []):
+        match = _FK_IDENT.match(line)
+        if match:
+            found.add(match.group(1))
+    return found
+
+
+def _pick_history_date(table: TableInfo) -> str | None:
+    dated = [
+        ident
+        for ident, col in zip(identifiers(table), table.columns)
+        if _is_temporal(col.dtype)
+    ]
+    if not dated:
+        return None
+    for hint in _HISTORY_DATE_HINTS:
+        for ident in dated:
+            if hint in ident.lower():
+                return ident
+    return dated[0]
+
+
+def _profile_grain(table: TableInfo) -> None:
+    """Detect the entity a table repeats over, and whether it is a history table.
+
+    Candidates are foreign keys plus `*_id` columns. The winner is the column
+    with the highest row-count coverage (non-null rows, then distinct count),
+    so a unique employee_id beats a repeating department FK. History requires
+    rows_per_entity >= 1.15 *and* a DATE/TIMESTAMP column — 1.0 is an entity
+    table, and a little above 1.0 is usually dirt rather than SCD-2.
+    """
+    table.grain_column = None
+    table.grain_entities = None
+    table.rows_per_entity = None
+    table.is_history_table = False
+    table.history_date_column = None
+    if not table.row_count or not table.columns:
+        return
+    fk_idents = _fk_column_idents(table.name)
+    candidates: list[tuple[int, int, str, float]] = []
+    for ident, col in zip(identifiers(table), table.columns):
+        if col.distinct_count <= 0:
+            continue
+        if ident not in fk_idents and not ident.endswith("_id"):
+            continue
+        coverage = table.row_count - col.null_count
+        rpe = table.row_count / col.distinct_count
+        candidates.append((coverage, col.distinct_count, ident, rpe))
+    if not candidates:
+        return
+    _coverage, entities, ident, rpe = max(candidates, key=lambda c: (c[0], c[1]))
+    table.grain_column = ident
+    table.grain_entities = entities
+    table.rows_per_entity = round(rpe, 2)
+    date_col = _pick_history_date(table)
+    if table.rows_per_entity >= _HISTORY_RPE_THRESHOLD and date_col:
+        table.is_history_table = True
+        table.history_date_column = date_col
+
+
+def aggregate_coverage(sql: str, tables: list[TableInfo]) -> dict | None:
+    """If SQL aggregates a column with null_pct > 1, return covered/total."""
+    if not sql:
+        return None
+    best: dict | None = None
+    best_pct = 1.0
+    for match in _AGG_COL.finditer(sql):
+        raw = match.group("qident") or match.group("ident") or ""
+        token = raw.replace('"', "").split(".")[-1].strip()
+        if not token or token == "*":
+            continue
+        token_l = token.lower()
+        for t in tables:
+            for ident, col in zip(identifiers(t), t.columns):
+                if ident.lower() != token_l or col.null_pct <= 1:
+                    continue
+                if best is None or col.null_pct > best_pct:
+                    best_pct = col.null_pct
+                    best = {
+                        "column": ident,
+                        "covered": t.row_count - col.null_count,
+                        "total": t.row_count,
+                    }
+    return best
 
 
 def _detect_foreign_keys(
@@ -241,6 +385,8 @@ def ingest(
         tables.append(_profile(con, table, originals))
 
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
+    for t in tables:
+        _profile_grain(t)
     return con, tables
 
 
@@ -262,23 +408,86 @@ def ingest_many(
             tables.append(t)
         single_con.close()
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
+    for t in tables:
+        _profile_grain(t)
     return con, tables
 
 
-def _ddl(table: TableInfo, with_samples: bool) -> str:
+def _case_variant_note(ident: str, col: ColumnInfo) -> str:
+    group = col.case_variant_examples[0] if col.case_variant_examples else ""
+    pretty: list[str] = []
+    for part in (p.strip() for p in group.split(" / ") if p.strip()):
+        match = re.match(r"^(.*) \((\d+)\)$", part)
+        if match:
+            pretty.append(f"'{match.group(1)}'({match.group(2)})")
+        else:
+            pretty.append(part)
+    if len(pretty) == 2:
+        shown = f"{pretty[0]} and {pretty[1]}"
+    elif pretty:
+        shown = ", ".join(pretty)
+    else:
+        shown = "values"
+    return (
+        f"{col.distinct_count} raw distinct, {col.case_variant_count} case-insensitive. "
+        f"{shown} are the same value. Group on lower({ident})."
+    )
+
+
+def _table_shape_comments(table: TableInfo) -> list[str]:
+    """Warnings that sit immediately after CREATE TABLE, before anything trimable."""
+    if table.is_history_table and table.grain_column and table.grain_entities is not None:
+        grain = table.grain_column
+        date_col = table.history_date_column or "date"
+        lines = [
+            f"-- {table.name}: {table.row_count} rows, "
+            f"{table.grain_entities} distinct {grain} "
+            f"({table.rows_per_entity} rows per {grain}).",
+            f"-- HISTORY TABLE: each row is a point in time, keyed by {date_col}.",
+            f"-- For current values, take the latest {date_col} per {grain}.",
+            "-- Do NOT average across rows — that weights employees by how many records they have.",
+        ]
+    else:
+        lines = [f"-- {table.name}: {table.row_count} rows"]
+    if table.row_count > _CASE_VARIANT_ROW_CAP:
+        lines.append(
+            f"-- case-variant check skipped: table has {table.row_count} rows"
+        )
+    return lines
+
+
+def _ddl(table: TableInfo, with_samples: bool, with_case: bool = True) -> str:
     lines = [f"CREATE TABLE {table.name} ("]
     idents = identifiers(table)
     last = len(table.columns) - 1
+    skip_case_table = table.row_count > _CASE_VARIANT_ROW_CAP
     for i, (ident, col) in enumerate(zip(idents, table.columns)):
-        notes = [f"{col.distinct_count} distinct"]
-        if col.null_count:
+        notes: list[str] = []
+        if with_case and col.case_variant_count is not None:
+            notes.append(_case_variant_note(ident, col))
+        else:
+            notes.append(f"{col.distinct_count} distinct")
+            if (
+                with_case
+                and not skip_case_table
+                and _is_varchar(col.dtype)
+                and col.distinct_count > _CASE_VARIANT_DISTINCT_CAP
+            ):
+                notes.append("case-variant check skipped (>10000 distinct)")
+        if col.null_pct > 1 and table.row_count:
+            covered = table.row_count - col.null_count
+            notes.append(
+                f"{col.null_count} of {table.row_count} null ({col.null_pct}%). "
+                f"avg() covers {covered} rows."
+            )
+        elif col.null_count:
             notes.append(f"{col.null_count} null")
         if with_samples and col.samples:
             notes.append("e.g. " + ", ".join(col.samples))
         decl = f"  {ident} {col.dtype}" + ("" if i == last else ",")
         lines.append(decl.ljust(28) + "-- " + ", ".join(notes))
     lines.append(");")
-    lines.append(f"-- {table.name}: {table.row_count} rows")
+    lines.extend(_table_shape_comments(table))
     return "\n".join(lines)
 
 
@@ -287,16 +496,26 @@ def render_schema(
 ) -> str:
     """Render CREATE TABLE DDL with profiling comments for the model prompt."""
     fks = FOREIGN_KEYS if foreign_keys is None else foreign_keys
-    for with_samples, with_fks in ((True, True), (False, True), (False, False)):
+    card = ""
+    for with_samples, with_fks, with_case in (
+        (True, True, True),
+        (False, True, True),
+        (False, False, True),
+        (False, False, False),
+    ):
         blocks = []
         for t in tables:
-            block = _ddl(t, with_samples)
+            block = _ddl(t, with_samples, with_case=with_case)
             if with_fks:
                 block += "".join("\n" + line for line in fks.get(t.name, []))
             blocks.append(block)
         card = "\n\n".join(blocks)
         if len(card) <= _MAX_SCHEMA_CHARS:
             return card
+    # History-table warnings prevent a wrong number. A sliced card that drops
+    # them is worse than one that overruns the token cap by a few hundred chars.
+    if any(t.is_history_table for t in tables):
+        return card
     return card[:_MAX_SCHEMA_CHARS]
 
 

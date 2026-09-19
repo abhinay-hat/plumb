@@ -1,0 +1,42 @@
+[
+  {
+    "i": 0,
+    "http": 200,
+    "elapsed": 1.2781231670005582,
+    "route": "clarify",
+    "refuse": "",
+    "rows": null
+  },
+  {
+    "i": 3,
+    "http": 200,
+    "elapsed": 1.3796267910001916,
+    "route": "refuse",
+    "refuse": "The model did not return a usable plan: groq returned 429: {\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-20b` in organization `org_01kdcydac",
+    "rows": null
+  },
+  {
+    "i": 1,
+    "http": 200,
+    "elapsed": 1.454748875000405,
+    "route": "refuse",
+    "refuse": "The model did not return a usable plan: groq returned 429: {\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-20b` in organization `org_01kdcydac",
+    "rows": null
+  },
+  {
+    "i": 2,
+    "http": 200,
+    "elapsed": 1.5395987920001062,
+    "route": "refuse",
+    "refuse": "The model did not return a usable plan: groq returned 429: {\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-20b` in organization `org_01kdcydac",
+    "rows": null
+  },
+  {
+    "i": 4,
+    "http": 200,
+    "elapsed": 1.6926172080002289,
+    "route": "refuse",
+    "refuse": "The model did not return a usable plan: groq returned 429: {\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-20b` in organization `org_01kdcydac",
+    "rows": null
+  }
+]

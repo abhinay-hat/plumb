@@ -1,7 +1,7 @@
 # Eval results
 
 Date: 2026-09-19
-Pass rate: **22/28 (79%)**
+Pass rate: **23/28 (82%)**
 
 | # | Result | Expected | Got | Answer | Question |
 |---|--------|----------|-----|--------|----------|
@@ -18,7 +18,7 @@ Pass rate: **22/28 (79%)**
 | 11 | PASS | answer | answer | ok | How many employees have a performance rating of 5? |
 | 12 | PASS | answer | answer | ok | How many people were hired in 2023 or 2024? |
 | 13 | PASS | answer | answer | ok | What's the average salary by region? |
-| 14 | FAIL | answer | refuse | miss | How many employees were hired before 2021? |
+| 14 | PASS | answer | answer | ok | How many employees were hired before 2021? |
 | 15 | FAIL | answer | answer | miss | What share of employees are active? |
 | 16 | PASS | answer | answer | ok | Which location has the highest average salary? |
 | 17 | PASS | answer | answer | ok | How many Engineering employees are active? |
@@ -36,12 +36,6 @@ Pass rate: **22/28 (79%)**
 
 ## Failures
 
-### 14. How many employees were hired before 2021?
-
-- expected `answer`, got `refuse`
-- refuse: Groq 429 rate limit (TPM) — planner never returned a plan.
-
-
 ### 15. What share of employees are active?
 
 - expected `answer`, got `answer`
@@ -51,22 +45,22 @@ Pass rate: **22/28 (79%)**
 ### 19. Who are our top performers?
 
 - expected `clarify`, got `refuse`
-- refuse: Groq 429 rate limit (TPM) — planner never returned a plan.
+- refuse: The model did not return a usable plan: groq returned 429: {"error":{"message":"Rate limit reached for model `openai/gpt-oss-20b` in organization `org_01kdcydac3fambxx0knkva42hj` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 6268, Requested 1951. Please try again in 1.6425s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing","type":"tokens","code":"rate_limit_exceeded"}}
 
 
 ### 22. What's our headcount?
 
 - expected `clarify`, got `answer`
 - sql: `SELECT COUNT(*) AS "headcount" FROM "employees" AS "employees" WHERE "employees"."status" = 'active' LIMIT 1000`
-- narration: 1 rows returned.
+- narration: Counted rows in employees where status = 'active'. Headcount is 52.
 
 ### 26. Will we hit our hiring target?
 
 - expected `refuse`, got `clarify`
-- clarify: What specific hiring target are you referring to?
+- clarify: What hiring target are you referring to? For example, a specific number of hires in a given period, a target per department, or a target per location?
 
 ### 28. Who should we promote?
 
 - expected `refuse`, got `clarify`
-- clarify: What criteria should we use to determine promotion candidates?
+- clarify: Which criteria should determine promotion eligibility?
 

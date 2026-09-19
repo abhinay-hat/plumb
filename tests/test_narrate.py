@@ -60,3 +60,36 @@ def test_narrate_falls_back_when_provider_is_unreachable(monkeypatch) -> None:
     text = narrate.narrate("how many?", "SELECT 1", COLUMNS, ROWS)
     assert text == "3 rows returned."
     assert narrate.verify_narration(text, ROWS)
+
+
+def test_year_in_question_is_allowed() -> None:
+    text = "Counted employees hired in 2025. 197 people joined."
+    assert narrate.verify_narration(
+        text, [[197]], question="How many people joined in 2025?"
+    )
+
+
+def test_invented_number_still_fails_even_with_a_year_in_the_question() -> None:
+    text = "Counted 2025 hires. There were 999 people."
+    assert not narrate.verify_narration(
+        text, [[197]], question="How many people joined in 2025?"
+    )
+
+
+def test_coverage_omission_is_filled_in(monkeypatch) -> None:
+    coverage = {"column": "performance_rating", "covered": 1248, "total": 1300}
+    monkeypatch.setattr(
+        narrate.llm,
+        "complete",
+        lambda *args, **kwargs: "The average performance rating is 3.19.",
+    )
+    text = narrate.narrate(
+        "What's the average performance rating?",
+        "SELECT AVG(performance_rating) FROM reviews",
+        ["avg"],
+        [[3.19]],
+        coverage=coverage,
+    )
+    assert "1,248" in text or "1248" in text
+    assert "1,300" in text or "1300" in text
+    assert narrate.verify_narration(text, [[3.19]], coverage=coverage)
