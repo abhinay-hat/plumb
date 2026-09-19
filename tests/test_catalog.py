@@ -125,7 +125,9 @@ def test_fixture_profile_and_schema_card() -> None:
     card = catalog.render_schema(tables)
     assert "CREATE TABLE employees (" in card
     assert "-- employees: 60 rows" in card
-    assert "references departments.department" in card
+    # The detected foreign key still reaches the card; compact rendering just
+    # drops the owning table name, which the surrounding block already gives.
+    assert "-- FK department -> departments.department" in card
     assert len(card) <= 10_000
 
     schema = catalog.schema_dict(tables)
@@ -137,12 +139,12 @@ def test_schema_card_drops_samples_when_too_long() -> None:
     _, tables = catalog.ingest_many([str(FIXTURES / "employees.csv")], "s")
     wide = catalog.render_schema(tables)
     assert "e.g." in wide
-    original = catalog._MAX_SCHEMA_CHARS
+    original = catalog._COMPACT_SCHEMA_CHARS
     try:
-        catalog._MAX_SCHEMA_CHARS = 420
+        catalog._COMPACT_SCHEMA_CHARS = 420
         trimmed = catalog.render_schema(tables)
     finally:
-        catalog._MAX_SCHEMA_CHARS = original
+        catalog._COMPACT_SCHEMA_CHARS = original
     assert "e.g." not in trimmed
     assert len(trimmed) < len(wide)
 
@@ -178,7 +180,7 @@ def test_engagement_survey_is_not_history_table(hr_tables) -> None:
     block = next(
         part
         for part in card.split("CREATE TABLE ")
-        if part.startswith(survey.name)
+        if part.startswith(catalog.display_name(survey))
     )
     assert "HISTORY TABLE" not in block
     assert "Do NOT average" not in block

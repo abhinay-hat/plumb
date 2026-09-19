@@ -15,6 +15,9 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import ParseError
 
 from backend.models import ColumnInfo, TableInfo
 
@@ -22,11 +25,41 @@ log = logging.getLogger("plumb.catalog")
 
 _MAX_SCHEMA_CHARS = 10_000  # ~2500 tokens at 4 chars/token
 _CHARS_PER_TOKEN = 4
-# Above this many tables the card is rendered with trimmed sample values.
-_COMPACT_TABLE_THRESHOLD = 6
 _COMPACT_SAMPLE_COUNT = 2
 _COMPACT_SAMPLE_DISTINCT_CAP = 50
+_ENUM_DISTINCT_CAP = 8  # at or below this, name the values instead of counting
+_NULL_NOTE_MIN_PCT = 1.0  # below this, a null note is noise
+_PRUNE_MIN_TABLES = 3  # never send fewer than this
+_PRUNE_MIN_SCORE = 3  # below this the question named nothing: send everything
+_RARE_TOKEN_TABLES = 2  # a word on at most this many tables is a strong signal
+_STOPWORDS = frozenset(
+    {
+        "what", "whats", "which", "many", "much", "show", "give", "list", "tell",
+        "have", "has", "does", "each", "from", "with", "that", "this", "there",
+        "their", "them", "they", "were", "when", "where", "about", "into",
+        "over", "under", "than", "then", "some", "most", "least", "more",
+        "less", "only", "just", "also", "been", "being", "will", "would",
+        "could", "should", "please", "average", "total", "count", "number",
+        "sum", "rate", "percent", "percentage", "breakdown", "group", "sort",
+        "order", "across", "between", "during", "last", "year", "years",
+        "month", "months", "our", "ours", "the", "and", "for", "are", "per",
+    }
+)
 _COMPACT_SCHEMA_CHARS = 7_200  # ~1800 tokens, the per-call budget we planned for
+# A sheet called "order" or "group" must keep its prefix: unquoted, the short
+# form would not parse as a table reference in the SQL the model writes.
+_RESERVED_TABLE_WORDS = frozenset(
+    {
+        "all", "and", "any", "as", "asc", "between", "by", "case", "cast", "check",
+        "column", "constraint", "create", "cross", "current", "default", "delete",
+        "desc", "distinct", "drop", "else", "end", "except", "exists", "false",
+        "from", "full", "group", "having", "in", "inner", "insert", "intersect",
+        "into", "is", "join", "left", "like", "limit", "not", "null", "offset",
+        "on", "or", "order", "outer", "primary", "references", "right", "select",
+        "set", "some", "table", "then", "to", "true", "union", "unique", "update",
+        "using", "values", "when", "where", "window", "with",
+    }
+)
 _DATE_SHAPES = (
     ("iso", re.compile(r"^\s*\d{4}-\d{1,2}-\d{1,2}\s*$"), None),
     ("dmy", re.compile(r"^\s*\d{1,2}/\d{1,2}/\d{4}\s*$"), "%d/%m/%Y"),
@@ -104,9 +137,11 @@ def _load_delimited(con: duckdb.DuckDBPyConnection, path: Path, table: str) -> N
         )
 
 
-def _load_excel(con: duckdb.DuckDBPyConnection, path: Path) -> list[tuple[str, list[str]]]:
+def _load_excel(
+    con: duckdb.DuckDBPyConnection, path: Path
+) -> list[tuple[str, list[str], str]]:
     raw = pd.read_excel(path, sheet_name=None, header=None, dtype=object)
-    loaded: list[tuple[str, list[str]]] = []
+    loaded: list[tuple[str, list[str], str]] = []
     for sheet, head_df in raw.items():
         originals = [
             "" if pd.isna(v) else str(v) for v in (head_df.iloc[0] if len(head_df) else [])
@@ -117,7 +152,7 @@ def _load_excel(con: duckdb.DuckDBPyConnection, path: Path) -> list[tuple[str, l
         con.register("_plumb_stage", frame)
         con.execute(f"CREATE OR REPLACE TABLE {_quote(table)} AS SELECT * FROM _plumb_stage")
         con.unregister("_plumb_stage")
-        loaded.append((table, originals))
+        loaded.append((table, originals, clean_names([str(sheet)])[0]))
     return loaded
 
 
@@ -191,6 +226,16 @@ def _profile(
             samples=[str(s[0]) for s in samples],
             null_pct=round(100.0 * null_count / row_count, 1) if row_count else 0.0,
         )
+        if _is_varchar(col.dtype) and 0 < distinct_count <= _ENUM_DISTINCT_CAP:
+            # Small enough to name exhaustively. Knowing the literals is what
+            # stops a query filtering on a value the column never holds.
+            col.values = [
+                str(v[0])
+                for v in con.execute(
+                    f"SELECT DISTINCT {q} FROM {_quote(table)} "
+                    f"WHERE {q} IS NOT NULL ORDER BY 1"
+                ).fetchall()
+            ]
         if (
             not skip_case
             and _is_varchar(col.dtype)
@@ -203,6 +248,18 @@ def _profile(
 
 def _is_varchar(dtype: str) -> bool:
     return dtype.upper().startswith("VARCHAR")
+
+
+_NUMERIC_PREFIXES = (
+    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT",
+    "USMALLINT", "UINTEGER", "UBIGINT", "DECIMAL", "NUMERIC", "REAL",
+    "FLOAT", "DOUBLE",
+)
+
+
+def _is_numeric(dtype: str) -> bool:
+    """Types avg() and sum() are meaningful on."""
+    return dtype.upper().strip().startswith(_NUMERIC_PREFIXES)
 
 
 def _is_temporal(dtype: str) -> bool:
@@ -323,7 +380,12 @@ def _profile_grain(con: duckdb.DuckDBPyConnection, table: TableInfo) -> None:
 
 
 def aggregate_coverage(sql: str, tables: list[TableInfo]) -> dict | None:
-    """If SQL aggregates a column with null_pct > 1, return covered/total."""
+    """If SQL aggregates a *numeric* column with null_pct > 1, return covered/total.
+
+    Numeric only, for the same reason the schema card no longer promises
+    `avg() covers N rows` on a VARCHAR: a coverage disclosure attached to a
+    text column describes an aggregate that cannot meaningfully be taken.
+    """
     if not sql:
         return None
     best: dict | None = None
@@ -337,6 +399,8 @@ def aggregate_coverage(sql: str, tables: list[TableInfo]) -> dict | None:
         for t in tables:
             for ident, col in zip(identifiers(t), t.columns):
                 if ident.lower() != token_l or col.null_pct <= 1:
+                    continue
+                if not _is_numeric(col.dtype):
                     continue
                 if best is None or col.null_pct > best_pct:
                     best_pct = col.null_pct
@@ -404,20 +468,24 @@ def ingest(
         delimiter = "\t" if suffix == ".tsv" else ","
         originals = _read_headers(path, delimiter)
         _load_delimited(con, path, table)
-        loaded = [(table, originals)]
+        # A CSV table is already just its stem, so there is no prefix to drop.
+        loaded = [(table, originals, table)]
     elif suffix == ".xlsx":
         loaded = _load_excel(con, path)
     else:
         raise ValueError(f"unsupported file type for plumb ingest: {suffix or path.name}")
 
     tables: list[TableInfo] = []
-    for table, originals in loaded:
+    for table, originals, sheet in loaded:
         _convert_date_columns(con, table)
-        tables.append(_profile(con, table, originals))
+        info = _profile(con, table, originals)
+        info.sheet_name = sheet
+        tables.append(info)
 
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
     for t in tables:
         _profile_grain(con, t)
+    assign_display_names(tables)
     return con, tables
 
 
@@ -462,6 +530,170 @@ def log_schema_cost(tables: list[TableInfo]) -> int:
     return tokens
 
 
+def assign_display_names(tables: list[TableInfo]) -> None:
+    """Show `employees`, not `northwind_hr_analytics_employees`.
+
+    Every sheet in one workbook carries the same file-stem prefix. It buys the
+    model nothing, and it is paid for twice: once in the schema card, and again
+    in every query the model writes. Dropping it is safe only while the short
+    form stays unambiguous, so a name shared by two uploaded files — or one
+    that would collide with another table's full name — keeps its prefix.
+    """
+    short_counts: dict[str, int] = {}
+    for t in tables:
+        candidate = (t.sheet_name or t.name).lower()
+        short_counts[candidate] = short_counts.get(candidate, 0) + 1
+    full_names = {t.name.lower() for t in tables}
+
+    for t in tables:
+        candidate = t.sheet_name or t.name
+        lowered = candidate.lower()
+        ambiguous = (
+            short_counts.get(lowered, 0) > 1
+            or (lowered != t.name.lower() and lowered in full_names)
+            or lowered in _RESERVED_TABLE_WORDS
+            or not candidate
+        )
+        t.display_name = t.name if ambiguous else candidate
+
+
+def display_name(table: TableInfo) -> str:
+    return table.display_name or table.name
+
+
+def alias_map(tables: list[TableInfo]) -> dict[str, str]:
+    """display name (lowercased) -> real DuckDB table name."""
+    return {
+        display_name(t).lower(): t.name
+        for t in tables
+        if display_name(t).lower() != t.name.lower()
+    }
+
+
+def _fk_references(tables: list[TableInfo]) -> dict[str, set[str]]:
+    """Which tables each table *points at* through a detected foreign key.
+
+    Direction matters. `compensation.employee_id` cannot be resolved without
+    `employees`, so choosing compensation must pull employees in. The reverse
+    is not true: `training` also points at employees, but a question about
+    salaries does not need the training sheet. Following the edges both ways
+    on a star schema selects the whole workbook and prunes nothing.
+    """
+    known = {t.name for t in tables}
+    edges: dict[str, set[str]] = {t.name: set() for t in tables}
+    for owner, lines in FOREIGN_KEYS.items():
+        if owner not in known:
+            continue
+        for line in lines:
+            match = _FK_LINE.match(line.strip())
+            if match and match.group(3) in known and match.group(3) != owner:
+                edges[owner].add(match.group(3))
+    return edges
+
+
+def _question_tokens(question: str) -> set[str]:
+    words = re.findall(r"[a-z]{4,}", question.lower())
+    return {w for w in words if w not in _STOPWORDS}
+
+
+def _score_tables(question: str, tables: list[TableInfo]) -> dict[str, int]:
+    """Score each table against the question, weighting rare matches higher.
+
+    "department" is a column on five of eight sheets, so it barely narrows
+    anything; "salary" appears on one, so it all but names the table. Scoring
+    every match equally lets the common word drown out the decisive one.
+    """
+    tokens = _question_tokens(question)
+    scores = {t.name: 0 for t in tables}
+
+    matches: dict[str, set[str]] = {token: set() for token in tokens}
+    for t in tables:
+        haystack = " ".join(
+            [*identifiers(t), *(c.name.lower() for c in t.columns)]
+        ).replace("_", " ")
+        for token in tokens:
+            if token in haystack:
+                matches[token].add(t.name)
+
+    for token, owners in matches.items():
+        weight = 3 if 0 < len(owners) <= _RARE_TOKEN_TABLES else 1
+        for name in owners:
+            scores[name] += weight
+
+    for t in tables:
+        name = display_name(t).lower()
+        if any(part in tokens or f"{part}s" in tokens for part in name.split("_")):
+            scores[t.name] += 3
+        for col in t.columns:
+            if any(v.lower() in question.lower() for v in col.values if len(v) > 3):
+                scores[t.name] += 1
+                break
+    return scores
+
+
+def select_tables(question: str, tables: list[TableInfo]) -> list[TableInfo]:
+    """The tables a question plausibly needs, plus everything they join to.
+
+    Sending eight tables to answer a three-table question is most of the
+    prompt bill. The risk is the opposite error — dropping a table a join
+    needs — so scoring is only ever allowed to narrow a clear signal: a vague
+    question, a small workbook, or a thin result all fall back to everything,
+    and `guard` catching an unknown table re-runs the turn on the full schema.
+    """
+    if len(tables) <= _PRUNE_MIN_TABLES + 1:
+        return tables
+
+    scores = _score_tables(question, tables)
+    best = max(scores.values(), default=0)
+    if best < _PRUNE_MIN_SCORE:
+        # The question names nothing in the schema. A vague question must not
+        # be answered against a subset we picked for it.
+        return tables
+
+    chosen = {name for name, score in scores.items() if score * 2 >= best}
+    edges = _fk_references(tables)
+    frontier = list(chosen)
+    while frontier:  # a referenced table may itself reference another
+        name = frontier.pop()
+        for target in edges.get(name, set()):
+            if target not in chosen:
+                chosen.add(target)
+                frontier.append(target)
+
+    if len(chosen) < _PRUNE_MIN_TABLES or len(chosen) >= len(tables):
+        return tables
+    return [t for t in tables if t.name in chosen]
+
+
+def restore_table_names(sql: str, aliases: dict[str, str]) -> str:
+    """Put the real table names back before anything validates or executes.
+
+    The model writes SQL against the display names it was shown; DuckDB only
+    knows the real ones. Rewriting here — on the AST, not by string
+    replacement — keeps `guard.validate` resolving against real identifiers,
+    so the security boundary never sees a name it cannot check.
+    """
+    if not aliases:
+        return sql
+    try:
+        tree = sqlglot.parse_one(sql, dialect="duckdb")
+    except ParseError:
+        return sql  # let the guard produce the parse error, with its own message
+    if tree is None:
+        return sql
+    # A CTE may legitimately be named like a table; renaming its references
+    # would point the query at a table the user never asked about.
+    cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+    for node in tree.find_all(exp.Table):
+        name = node.name.lower()
+        if name in cte_names:
+            continue
+        real = aliases.get(name)
+        if real:
+            node.set("this", exp.to_identifier(real, quoted=False))
+    return tree.sql(dialect="duckdb")
+
+
 def _case_variant_note(ident: str, col: ColumnInfo) -> str:
     group = col.case_variant_examples[0] if col.case_variant_examples else ""
     pretty: list[str] = []
@@ -485,6 +717,7 @@ def _case_variant_note(ident: str, col: ColumnInfo) -> str:
 
 def _table_shape_comments(table: TableInfo) -> list[str]:
     """Warnings that sit immediately after CREATE TABLE, before anything trimable."""
+    name = display_name(table)
     repeating = (
         table.grain_column
         and table.grain_entities is not None
@@ -495,7 +728,7 @@ def _table_shape_comments(table: TableInfo) -> list[str]:
         grain = table.grain_column
         date_col = table.history_date_column or "date"
         lines = [
-            f"-- {table.name}: {table.row_count} rows, "
+            f"-- {name}: {table.row_count} rows, "
             f"{table.grain_entities} distinct {grain} "
             f"({table.rows_per_entity} rows per {grain}).",
             f"-- HISTORY TABLE: each row is a point in time, keyed by {date_col}.",
@@ -505,18 +738,51 @@ def _table_shape_comments(table: TableInfo) -> list[str]:
     elif repeating:
         grain = table.grain_column
         lines = [
-            f"-- {table.name}: {table.row_count} rows, "
+            f"-- {name}: {table.row_count} rows, "
             f"{table.grain_entities} distinct {grain} "
             f"({table.rows_per_entity} rows per {grain}).",
             f"-- Multiple rows per {grain} — check which columns form the grain before aggregating.",
         ]
     else:
-        lines = [f"-- {table.name}: {table.row_count} rows"]
+        lines = [f"-- {name}: {table.row_count} rows"]
     if table.row_count > _CASE_VARIANT_ROW_CAP:
         lines.append(
             f"-- case-variant check skipped: table has {table.row_count} rows"
         )
     return lines
+
+
+def _enumerable_values(col: ColumnInfo, row_count: int) -> list[str]:
+    """The full value set, when it is short enough to be worth naming."""
+    if not col.values or col.distinct_count > _ENUM_DISTINCT_CAP:
+        return []
+    if col.case_variant_count is not None:
+        return []  # the case-variant note already names the colliding values
+    if row_count > 1 and col.distinct_count == row_count:
+        # One value per row: a key, not a category. Listing it teaches the
+        # model nothing about how to filter and costs a line per value.
+        return []
+    return col.values
+
+
+def _null_notes(col: ColumnInfo, row_count: int) -> list[str]:
+    """Null coverage, phrased so it is true for the column's type.
+
+    `avg() covers 633 rows` on a VARCHAR is not merely wasted tokens — avg()
+    on text is meaningless, so the note invites a query that cannot work. The
+    coverage fact still matters for text; only the avg() framing is numeric.
+    """
+    if not row_count or not col.null_count:
+        return []
+    if col.null_pct <= _NULL_NOTE_MIN_PCT:
+        return []  # under 1%: not decision-relevant, and it costs a line
+    if _is_numeric(col.dtype):
+        covered = row_count - col.null_count
+        return [
+            f"{col.null_count} of {row_count} null ({col.null_pct}%). "
+            f"avg() covers {covered} rows."
+        ]
+    return [f"{round(col.null_pct)}% null"]
 
 
 def _samples_for(col: ColumnInfo, compact: bool) -> list[str]:
@@ -536,22 +802,30 @@ def _ddl(
     with_case: bool = True,
     compact_samples: bool = False,
 ) -> str:
-    lines = [f"CREATE TABLE {table.name} ("]
+    lines = [f"CREATE TABLE {display_name(table)} ("]
     idents = identifiers(table)
     last = len(table.columns) - 1
     skip_case_table = table.row_count > _CASE_VARIANT_ROW_CAP
     for i, (ident, col) in enumerate(zip(idents, table.columns)):
         notes: list[str] = []
-        uninformative = (
-            compact_samples and col.distinct_count > _COMPACT_SAMPLE_DISTINCT_CAP
+        enumerated = _enumerable_values(col, table.row_count)
+        uninformative = compact_samples and (
+            col.distinct_count > _COMPACT_SAMPLE_DISTINCT_CAP
+            # "2 distinct, e.g. False, True" on a BOOLEAN is the type restated.
+            or col.dtype.upper().startswith("BOOL")
         )
         if with_case and col.case_variant_count is not None:
             notes.append(_case_variant_note(ident, col))
         else:
-            # "640 distinct" on a 640-row id column says nothing the column
-            # name did not already say. Dropped only in compact mode; the
-            # case-variant warning below is never dropped.
-            if not uninformative:
+            if enumerated:
+                # Naming the values beats counting them: "2 distinct" is what
+                # makes a model write status = 'active' against data holding
+                # 'Active', get zero rows, and report it as an answer.
+                notes.append(", ".join(f"'{v}'" for v in enumerated))
+            elif not uninformative:
+                # "640 distinct" on a 640-row id column says nothing the
+                # column name did not already say. Dropped only in compact
+                # mode; the case-variant warning below is never dropped.
                 notes.append(f"{col.distinct_count} distinct")
             if (
                 with_case
@@ -560,37 +834,37 @@ def _ddl(
                 and col.distinct_count > _CASE_VARIANT_DISTINCT_CAP
             ):
                 notes.append("case-variant check skipped (>10000 distinct)")
-        if col.null_pct > 1 and table.row_count:
-            covered = table.row_count - col.null_count
-            notes.append(
-                f"{col.null_count} of {table.row_count} null ({col.null_pct}%). "
-                f"avg() covers {covered} rows."
-            )
-        elif col.null_count:
-            notes.append(f"{col.null_count} null")
-        samples = _samples_for(col, compact_samples) if with_samples else []
-        if samples:
+        notes.extend(_null_notes(col, table.row_count))
+        samples = [] if (enumerated or uninformative) else _samples_for(col, compact_samples)
+        if with_samples and samples:
             notes.append("e.g. " + ", ".join(samples))
         decl = f"  {ident} {col.dtype}" + ("" if i == last else ",")
         decl = decl + " " if compact_samples else decl.ljust(28)
-        lines.append(decl + ("-- " + ", ".join(notes) if notes else ""))
+        lines.append((decl + ("-- " + ", ".join(notes) if notes else "")).rstrip())
     lines.append(");")
     lines.extend(_table_shape_comments(table))
     return "\n".join(lines)
 
 
-def _short_fk(table_name: str, line: str) -> str:
-    """`-- a.b likely references c.d` → `-- FK b -> c.d`.
+_FK_LINE = re.compile(r"^-- (\S+)\.(\S+) likely references (\S+)\.(\S+)$")
 
-    The line already sits inside table `a`'s block, so repeating the owning
-    table name costs tokens and tells the model nothing new.
+
+def _render_fk(line: str, names: dict[str, str], compact: bool) -> str:
+    """Rewrite an FK note into display names, and shorten it in compact mode.
+
+    `-- a.b likely references c.d` → `-- FK b -> c.d`: the line already sits
+    inside table `a`'s block, so repeating the owning table name costs tokens
+    and tells the model nothing new.
     """
-    match = re.match(
-        rf"^-- {re.escape(table_name)}\.(\S+) likely references (\S+)$", line.strip()
-    )
+    match = _FK_LINE.match(line.strip())
     if not match:
         return line
-    return f"-- FK {match.group(1)} -> {match.group(2)}"
+    owner, col, target, target_col = match.groups()
+    owner = names.get(owner, owner)
+    target = names.get(target, target)
+    if compact:
+        return f"-- FK {col} -> {target}.{target_col}"
+    return f"-- {owner}.{col} likely references {target}.{target_col}"
 
 
 def render_schema(
@@ -602,8 +876,14 @@ def render_schema(
     # call, and at a per-minute token ceiling that cost is what makes a demo
     # look broken. Start compact above the threshold instead of only falling
     # back to it once the card has already blown past the char cap.
-    compact = len(tables) > _COMPACT_TABLE_THRESHOLD
-    budget = _COMPACT_SCHEMA_CHARS if compact else _MAX_SCHEMA_CHARS
+    # Compact rendering used to be reserved for wide workbooks. Once pruning
+    # landed, table count stopped being a proxy for cost — a three-table card
+    # was being rendered verbosely purely because it was short on tables — and
+    # the compact form is strictly better anyway: it drops padding and uncounted
+    # ids, never a warning.
+    compact = True
+    budget = _COMPACT_SCHEMA_CHARS
+    names = {t.name: display_name(t) for t in tables}
     card = ""
     for with_samples, with_fks, with_case in (
         (True, True, True),
@@ -615,11 +895,11 @@ def render_schema(
         for t in tables:
             block = _ddl(t, with_samples, with_case=with_case, compact_samples=compact)
             if with_fks:
-                lines = fks.get(t.name, [])
-                if compact:
-                    lines = [_short_fk(t.name, line) for line in lines]
-                block += "".join("\n" + line for line in lines)
-            blocks.append(block)
+                block += "".join(
+                    "\n" + _render_fk(line, names, compact)
+                    for line in fks.get(t.name, [])
+                )
+            blocks.append(block.rstrip())
         card = "\n\n".join(blocks)
         if len(card) <= budget:
             return card

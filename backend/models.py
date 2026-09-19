@@ -12,15 +12,18 @@ class ColumnInfo(BaseModel):
     null_count: int
     distinct_count: int
     samples: list[str]
+    values: list[str] = []  # the complete value set, for low-cardinality text
     null_pct: float = 0.0  # null_count / row_count, 0–100
     case_variant_count: int | None = None  # distinct(lower(col)) when it differs
     case_variant_examples: list[str] = []  # e.g. ["Hyderabad (183) / hyderabad (4)"]
 
 
 class TableInfo(BaseModel):
-    name: str
+    name: str  # the real DuckDB identifier — the only thing that ever executes
     row_count: int
     columns: list[ColumnInfo]
+    sheet_name: str | None = None  # the sheet/file part, without the file stem
+    display_name: str = ""  # what the model is shown; "" means use `name`
     grain_column: str | None = None  # the FK this table repeats over
     grain_entities: int | None = None  # distinct values of that column
     rows_per_entity: float | None = None
@@ -39,6 +42,7 @@ class Plan(BaseModel):
     chart: Literal["bar", "line", "pie", "scatter", "none"] = "none"
     chart_x: str | None = None
     chart_y: list[str] | None = None
+    guard_code: str | None = None  # why the planner gave up, when it did
 
 
 class AskResponse(BaseModel):
@@ -55,5 +59,6 @@ class AskResponse(BaseModel):
     reply: str | None = None  # route == "chat"
     error_code: str | None = None  # route == "error", e.g. provider_rate_limited
     error_message: str | None = None
+    tables_sent: list[str] | None = None  # which tables the planner was shown
     definitions_applied: dict[str, str] = {}
     elapsed_ms: int

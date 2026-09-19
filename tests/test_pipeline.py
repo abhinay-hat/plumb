@@ -28,12 +28,21 @@ def _stub(monkeypatch: pytest.MonkeyPatch, plans: list[Plan]) -> list[dict]:
     """Serve `plans` in order, repeating the last, and record each call."""
     calls: list[dict] = []
 
-    def fake_plan(question, schema_card, definitions, history, schema=None, force_answer=False):
+    def fake_plan(
+        question,
+        schema_card,
+        definitions,
+        history,
+        schema=None,
+        force_answer=False,
+        aliases=None,
+    ):
         calls.append(
             {
                 "question": question,
                 "definitions": dict(definitions),
                 "force_answer": force_answer,
+                "schema_card": schema_card,
             }
         )
         return plans[min(len(calls) - 1, len(plans) - 1)]
@@ -134,6 +143,46 @@ def test_an_unsettled_term_may_still_clarify_again(session, monkeypatch) -> None
 
     assert pipeline.ask("what's our headcount?", session).route == "clarify"
     assert pipeline.ask("what's our headcount?", session).route == "clarify"
+
+
+def test_an_unknown_table_rejection_retries_on_the_full_schema(monkeypatch) -> None:
+    """Over-pruning must self-correct, not surface as a refusal."""
+    con, tables = catalog.ingest_many([str(FIXTURES / "northwind_hr_analytics.xlsx")], "t")
+    guard.safe_connection(con)
+    hr = pipeline.Session(con=con, tables=tables)
+
+    cards: list[str] = []
+
+    def fake_plan(question, schema_card, definitions, history, **_kwargs):
+        cards.append(schema_card)
+        if len(cards) == 1:
+            return Plan(
+                route="refuse",
+                refuse_reason="That query could not be run: table training is not one of...",
+                guard_code="unknown_table",
+            )
+        return Plan(route="answer", sql="SELECT count(*) AS n FROM employees")
+
+    monkeypatch.setattr(pipeline, "make_plan", fake_plan)
+
+    response = pipeline.ask("What is the average salary by department?", hr)
+
+    assert len(cards) == 2, "a narrow card should be retried on the full schema"
+    assert len(cards[1]) > len(cards[0])
+    assert response.route == "answer"
+    assert response.tables_sent is not None
+    assert len(response.tables_sent) == len(tables)
+
+
+def test_the_planner_is_shown_only_the_tables_a_question_needs(monkeypatch) -> None:
+    con, tables = catalog.ingest_many([str(FIXTURES / "northwind_hr_analytics.xlsx")], "t")
+    guard.safe_connection(con)
+    hr = pipeline.Session(con=con, tables=tables)
+    _stub(monkeypatch, [Plan(route="refuse", refuse_reason="no")])
+
+    response = pipeline.ask("What is the average salary by department?", hr)
+
+    assert response.tables_sent == ["employees", "departments", "compensation"]
 
 
 def test_greeting_routes_to_chat_with_no_sql(session, monkeypatch) -> None:

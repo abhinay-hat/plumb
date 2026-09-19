@@ -29,8 +29,12 @@ class Session:
         """Record a chosen clarify option so later turns stop asking."""
         self.definitions[term.strip().lower()] = definition
 
-    def schema_card(self) -> str:
-        return catalog.render_schema(self.tables)
+    def schema_card(self, tables: list[TableInfo] | None = None) -> str:
+        return catalog.render_schema(self.tables if tables is None else tables)
+
+    def aliases(self) -> dict[str, str]:
+        """Display table name -> real DuckDB name, for the SQL coming back."""
+        return catalog.alias_map(self.tables)
 
     def schema(self) -> dict[str, dict[str, str]]:
         return catalog.schema_dict(self.tables)
@@ -95,6 +99,7 @@ def _break_clarify_loop(
         session.history,
         schema=session.schema(),
         force_answer=True,
+        aliases=session.aliases(),
     )
     if forced.route != "clarify":
         return forced
@@ -118,15 +123,41 @@ def ask(question: str, session: Session) -> AskResponse:
         return int((time.perf_counter() - started) * 1000)
 
     applied = _applied_definitions(question, session.definitions)
-    schema_card = session.schema_card()
+    sent = catalog.select_tables(question, session.tables)
+    schema_card = session.schema_card(sent)
+    sent_names = [catalog.display_name(t) for t in sent]
+    if len(sent) < len(session.tables):
+        log.info(
+            "planner sees %d of %d tables: %s",
+            len(sent),
+            len(session.tables),
+            ", ".join(sent_names),
+        )
     try:
         plan = make_plan(
             question,
             schema_card,
             session.definitions,
             session.history,
-            schema=session.schema(),
+            schema=catalog.schema_dict(sent),
+            aliases=session.aliases(),
         )
+        if plan.guard_code == "unknown_table" and len(sent) < len(session.tables):
+            # Over-pruning is the one way this feature produces a wrong answer,
+            # so it is made self-correcting: the model reached for a table we
+            # decided not to show it, which is our mistake, not the user's.
+            log.warning("pruned schema was too narrow; re-planning on all tables")
+            sent = session.tables
+            sent_names = [catalog.display_name(t) for t in sent]
+            schema_card = session.schema_card(sent)
+            plan = make_plan(
+                question,
+                schema_card,
+                session.definitions,
+                session.history,
+                schema=session.schema(),
+                aliases=session.aliases(),
+            )
         if plan.route == "clarify":
             plan = _break_clarify_loop(question, plan, session, schema_card, applied)
     except llm.RateLimitError as e:
@@ -144,6 +175,7 @@ def ask(question: str, session: Session) -> AskResponse:
             ),
             definitions_applied=applied,
             elapsed_ms=elapsed(),
+            tables_sent=sent_names,
         )
 
     if plan.route == "chat":
@@ -153,6 +185,7 @@ def ask(question: str, session: Session) -> AskResponse:
             reply=plan.reply,
             definitions_applied=applied,
             elapsed_ms=elapsed(),
+            tables_sent=sent_names,
         )
 
     if plan.route in ("clarify", "refuse"):
@@ -170,9 +203,12 @@ def ask(question: str, session: Session) -> AskResponse:
             refuse_reason=plan.refuse_reason,
             definitions_applied=applied,
             elapsed_ms=elapsed(),
+            tables_sent=sent_names,
         )
 
-    sql = guard.validate(plan.sql, session.schema())
+    sql = guard.validate(
+        catalog.restore_table_names(plan.sql, session.aliases()), session.schema()
+    )
     try:
         cursor = session.con.execute(sql)
         columns = [d[0] for d in cursor.description]
@@ -188,6 +224,7 @@ def ask(question: str, session: Session) -> AskResponse:
             refuse_reason=f"The query passed validation but DuckDB could not run it: {e}",
             definitions_applied=applied,
             elapsed_ms=elapsed(),
+            tables_sent=sent_names,
         )
 
     coverage = catalog.aggregate_coverage(sql, session.tables)
@@ -212,4 +249,5 @@ def ask(question: str, session: Session) -> AskResponse:
         chart=spec,
         definitions_applied=applied,
         elapsed_ms=elapsed(),
+        tables_sent=sent_names,
     )

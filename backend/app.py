@@ -144,6 +144,7 @@ def _log_turn(session_id: str, question: str, response: AskResponse) -> None:
             # Distinct from guard_errors on purpose: a rate limit says nothing
             # about the SQL or the data, so it must not read as one.
             "error_code": response.error_code,
+            "tables_sent": response.tables_sent,
             "definitions_applied": dict(response.definitions_applied),
             "narration_verified": verified,
         },
