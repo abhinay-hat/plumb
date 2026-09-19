@@ -1,4 +1,4 @@
-export type Route = "answer" | "clarify" | "refuse";
+export type Route = "answer" | "clarify" | "refuse" | "chat" | "error";
 export type ChartKind = "bar" | "line" | "pie" | "scatter" | "none";
 
 export interface ColumnInfo {
@@ -20,7 +20,9 @@ export interface Plan {
   sql: string | null;
   clarify_question: string | null;
   clarify_options: string[] | null;
+  clarify_term: string | null;
   refuse_reason: string | null;
+  reply: string | null;
   chart: ChartKind;
   chart_x: string | null;
   chart_y: string[] | null;
@@ -37,7 +39,11 @@ export interface AskResponse {
   chart: Record<string, unknown> | null;
   clarify_question: string | null;
   clarify_options: string[] | null;
+  clarify_term: string | null;
   refuse_reason: string | null;
+  reply: string | null;
+  error_code: string | null;
+  error_message: string | null;
   definitions_applied: Record<string, string>;
   elapsed_ms: number;
 }
@@ -53,6 +59,7 @@ export interface AuditEntry {
   model: string;
   provider: string;
   guard_errors: string[];
+  error_code: string | null;
   definitions_applied: Record<string, string>;
   narration_verified: boolean;
 }

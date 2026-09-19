@@ -9,6 +9,7 @@ queryable identifier re-derives it from the ordered column list.
 from __future__ import annotations
 
 import csv
+import logging
 import re
 from pathlib import Path
 
@@ -17,7 +18,15 @@ import pandas as pd
 
 from backend.models import ColumnInfo, TableInfo
 
+log = logging.getLogger("plumb.catalog")
+
 _MAX_SCHEMA_CHARS = 10_000  # ~2500 tokens at 4 chars/token
+_CHARS_PER_TOKEN = 4
+# Above this many tables the card is rendered with trimmed sample values.
+_COMPACT_TABLE_THRESHOLD = 6
+_COMPACT_SAMPLE_COUNT = 2
+_COMPACT_SAMPLE_DISTINCT_CAP = 50
+_COMPACT_SCHEMA_CHARS = 7_200  # ~1800 tokens, the per-call budget we planned for
 _DATE_SHAPES = (
     ("iso", re.compile(r"^\s*\d{4}-\d{1,2}-\d{1,2}\s*$"), None),
     ("dmy", re.compile(r"^\s*\d{1,2}/\d{1,2}/\d{4}\s*$"), "%d/%m/%Y"),
@@ -432,7 +441,25 @@ def ingest_many(
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
     for t in tables:
         _profile_grain(con, t)
+    log_schema_cost(tables)
     return con, tables
+
+
+def log_schema_cost(tables: list[TableInfo]) -> int:
+    """Log what the schema card will cost on every planner call.
+
+    The card is sent with each question, so its size is the standing per-turn
+    token bill — invisible until it trips a per-minute ceiling.
+    """
+    card = render_schema(tables)
+    tokens = len(card) // _CHARS_PER_TOKEN
+    log.info(
+        "schema card: %d tables, %d chars, ~%d tokens per planner call",
+        len(tables),
+        len(card),
+        tokens,
+    )
+    return tokens
 
 
 def _case_variant_note(ident: str, col: ColumnInfo) -> str:
@@ -492,17 +519,40 @@ def _table_shape_comments(table: TableInfo) -> list[str]:
     return lines
 
 
-def _ddl(table: TableInfo, with_samples: bool, with_case: bool = True) -> str:
+def _samples_for(col: ColumnInfo, compact: bool) -> list[str]:
+    """Sample values are the cheapest thing in the card to cut, and the least
+    load-bearing: they help the model recognise a value's shape, which a
+    high-cardinality column cannot convey in a handful of examples anyway."""
+    if not compact:
+        return col.samples
+    if col.distinct_count > _COMPACT_SAMPLE_DISTINCT_CAP:
+        return []
+    return col.samples[:_COMPACT_SAMPLE_COUNT]
+
+
+def _ddl(
+    table: TableInfo,
+    with_samples: bool,
+    with_case: bool = True,
+    compact_samples: bool = False,
+) -> str:
     lines = [f"CREATE TABLE {table.name} ("]
     idents = identifiers(table)
     last = len(table.columns) - 1
     skip_case_table = table.row_count > _CASE_VARIANT_ROW_CAP
     for i, (ident, col) in enumerate(zip(idents, table.columns)):
         notes: list[str] = []
+        uninformative = (
+            compact_samples and col.distinct_count > _COMPACT_SAMPLE_DISTINCT_CAP
+        )
         if with_case and col.case_variant_count is not None:
             notes.append(_case_variant_note(ident, col))
         else:
-            notes.append(f"{col.distinct_count} distinct")
+            # "640 distinct" on a 640-row id column says nothing the column
+            # name did not already say. Dropped only in compact mode; the
+            # case-variant warning below is never dropped.
+            if not uninformative:
+                notes.append(f"{col.distinct_count} distinct")
             if (
                 with_case
                 and not skip_case_table
@@ -518,13 +568,29 @@ def _ddl(table: TableInfo, with_samples: bool, with_case: bool = True) -> str:
             )
         elif col.null_count:
             notes.append(f"{col.null_count} null")
-        if with_samples and col.samples:
-            notes.append("e.g. " + ", ".join(col.samples))
+        samples = _samples_for(col, compact_samples) if with_samples else []
+        if samples:
+            notes.append("e.g. " + ", ".join(samples))
         decl = f"  {ident} {col.dtype}" + ("" if i == last else ",")
-        lines.append(decl.ljust(28) + "-- " + ", ".join(notes))
+        decl = decl + " " if compact_samples else decl.ljust(28)
+        lines.append(decl + ("-- " + ", ".join(notes) if notes else ""))
     lines.append(");")
     lines.extend(_table_shape_comments(table))
     return "\n".join(lines)
+
+
+def _short_fk(table_name: str, line: str) -> str:
+    """`-- a.b likely references c.d` → `-- FK b -> c.d`.
+
+    The line already sits inside table `a`'s block, so repeating the owning
+    table name costs tokens and tells the model nothing new.
+    """
+    match = re.match(
+        rf"^-- {re.escape(table_name)}\.(\S+) likely references (\S+)$", line.strip()
+    )
+    if not match:
+        return line
+    return f"-- FK {match.group(1)} -> {match.group(2)}"
 
 
 def render_schema(
@@ -532,6 +598,12 @@ def render_schema(
 ) -> str:
     """Render CREATE TABLE DDL with profiling comments for the model prompt."""
     fks = FOREIGN_KEYS if foreign_keys is None else foreign_keys
+    # A workbook with many tables pays for full sample lists on every planner
+    # call, and at a per-minute token ceiling that cost is what makes a demo
+    # look broken. Start compact above the threshold instead of only falling
+    # back to it once the card has already blown past the char cap.
+    compact = len(tables) > _COMPACT_TABLE_THRESHOLD
+    budget = _COMPACT_SCHEMA_CHARS if compact else _MAX_SCHEMA_CHARS
     card = ""
     for with_samples, with_fks, with_case in (
         (True, True, True),
@@ -541,12 +613,15 @@ def render_schema(
     ):
         blocks = []
         for t in tables:
-            block = _ddl(t, with_samples, with_case=with_case)
+            block = _ddl(t, with_samples, with_case=with_case, compact_samples=compact)
             if with_fks:
-                block += "".join("\n" + line for line in fks.get(t.name, []))
+                lines = fks.get(t.name, [])
+                if compact:
+                    lines = [_short_fk(t.name, line) for line in lines]
+                block += "".join("\n" + line for line in lines)
             blocks.append(block)
         card = "\n\n".join(blocks)
-        if len(card) <= _MAX_SCHEMA_CHARS:
+        if len(card) <= budget:
             return card
     # History-table warnings prevent a wrong number. A sliced card that drops
     # them is worse than one that overruns the token cap by a few hundred chars.

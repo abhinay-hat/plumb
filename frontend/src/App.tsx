@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import * as api from "./api";
 import { AnswerCard } from "./components/AnswerCard";
 import { AuditDrawer } from "./components/AuditDrawer";
+import { ChatCard } from "./components/ChatCard";
 import { ClarifyCard } from "./components/ClarifyCard";
 import { Composer } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
@@ -41,22 +42,6 @@ interface ErrorTurn {
 }
 
 type Turn = UserTurn | ModelTurn | PendingTurn | ErrorTurn;
-
-const KNOWN_TERMS = [
-  "top performers",
-  "underperforming",
-  "recent hires",
-  "attrition rate",
-  "headcount",
-  "how's the team doing",
-  "attrition",
-];
-
-function inferTerm(question: string): string {
-  const lower = question.toLowerCase();
-  const hit = KNOWN_TERMS.find((term) => lower.includes(term));
-  return hit ?? "definition";
-}
 
 function nextId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -136,19 +121,23 @@ export default function App() {
     }
   }
 
-  async function onClarify(question: string, definition: string) {
+  // The planner names the term it clarified. The frontend never guesses:
+  // a guessed key files the definition where the planner will never look,
+  // and the same clarify card comes back forever.
+  async function onClarify(turn: ModelTurn, definition: string) {
     if (!sessionId) return;
+    const term = turn.response.clarify_term ?? turn.question;
     try {
-      await api.settle(sessionId, inferTerm(question), definition);
+      await api.settle(sessionId, term, definition);
     } catch (err) {
       const message = err instanceof ApiRequestError ? err.message : String(err);
       setTurns((prev) => [
         ...prev,
-        { id: nextId(), kind: "error", question, message },
+        { id: nextId(), kind: "error", question: turn.question, message },
       ]);
       return;
     }
-    await runAsk(question);
+    await runAsk(turn.question);
   }
 
   const tableLabel = sessionId
@@ -242,12 +231,27 @@ export default function App() {
                       key={turn.id}
                       response={turn.response}
                       busy={busy}
-                      onChoose={(definition) => void onClarify(turn.question, definition)}
+                      onChoose={(definition) => void onClarify(turn, definition)}
                     />
                   );
                 }
                 if (turn.response.route === "refuse") {
                   return <RefuseCard key={turn.id} response={turn.response} />;
+                }
+                if (turn.response.route === "chat") {
+                  return <ChatCard key={turn.id} response={turn.response} />;
+                }
+                if (turn.response.route === "error") {
+                  return (
+                    <ErrorCard
+                      key={turn.id}
+                      message={
+                        turn.response.error_message ??
+                        "Something went wrong before the question was answered."
+                      }
+                      onRetry={() => void runAsk(turn.question)}
+                    />
+                  );
                 }
                 return <AnswerCard key={turn.id} response={turn.response} />;
               })}

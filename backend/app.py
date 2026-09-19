@@ -6,6 +6,8 @@ import logging
 import os
 import shutil
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +22,15 @@ from backend import audit, catalog, guard, llm, narrate, pipeline
 from backend.models import AskResponse
 from backend.pipeline import Session
 from backend.session import store
+
+# uvicorn configures only its own loggers, so without this the plumb loggers
+# propagate to a root logger with no handler and every warning the pipeline
+# raises — rate limits, discarded narrations, guard rejections — is silently
+# dropped. Those lines are the whole point of an auditable tool.
+logging.basicConfig(
+    level=os.environ.get("PLUMB_LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s:%(name)s:%(message)s",
+)
 
 log = logging.getLogger("plumb.app")
 
@@ -46,7 +57,26 @@ class SettleBody(BaseModel):
     definition: str = Field(min_length=1)
 
 
-app = FastAPI(title="plumb", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Name the provider and model on boot.
+
+    `GROQ_API_KEY is not set` used to be discoverable only from a failed
+    question, which read as the app being confused about the data. Saying it
+    at startup makes a missing key a boot-time fact instead of a mid-demo
+    mystery.
+    """
+    provider = _provider()
+    log.info("plumb starting: provider=%s model=%s", provider, _model())
+    if provider == "groq" and not os.environ.get("GROQ_API_KEY"):
+        log.warning(
+            "GROQ_API_KEY is not set — every question will fail. "
+            "Put it in .env (see .env.example) or set PLUMB_PROVIDER=ollama."
+        )
+    yield
+
+
+app = FastAPI(title="plumb", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -111,6 +141,9 @@ def _log_turn(session_id: str, question: str, response: AskResponse) -> None:
             "model": _model(),
             "provider": _provider(),
             "guard_errors": [],
+            # Distinct from guard_errors on purpose: a rate limit says nothing
+            # about the SQL or the data, so it must not read as one.
+            "error_code": response.error_code,
             "definitions_applied": dict(response.definitions_applied),
             "narration_verified": verified,
         },

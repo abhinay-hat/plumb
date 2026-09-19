@@ -29,18 +29,20 @@ class TableInfo(BaseModel):
 
 
 class Plan(BaseModel):
-    route: Literal["answer", "clarify", "refuse"]
+    route: Literal["answer", "clarify", "refuse", "chat"]
     sql: str | None = None
     clarify_question: str | None = None
     clarify_options: list[str] | None = None
+    clarify_term: str | None = None  # which term this clarification is about
     refuse_reason: str | None = None
+    reply: str | None = None  # route == "chat"
     chart: Literal["bar", "line", "pie", "scatter", "none"] = "none"
     chart_x: str | None = None
     chart_y: list[str] | None = None
 
 
 class AskResponse(BaseModel):
-    route: Literal["answer", "clarify", "refuse"]
+    route: Literal["answer", "clarify", "refuse", "chat", "error"]
     sql: str | None = None
     columns: list[str] | None = None
     rows: list[list] | None = None
@@ -48,6 +50,10 @@ class AskResponse(BaseModel):
     chart: dict | None = None
     clarify_question: str | None = None
     clarify_options: list[str] | None = None
+    clarify_term: str | None = None
     refuse_reason: str | None = None
+    reply: str | None = None  # route == "chat"
+    error_code: str | None = None  # route == "error", e.g. provider_rate_limited
+    error_message: str | None = None
     definitions_applied: dict[str, str] = {}
     elapsed_ms: int
