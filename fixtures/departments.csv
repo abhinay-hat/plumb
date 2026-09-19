@@ -1,0 +1,6 @@
+department,cost_center,head_count_budget,region
+Engineering,CC-100,25,South
+Sales,CC-200,18,West
+Marketing,CC-300,10,North
+HR,CC-400,8,South
+Finance,CC-500,12,West

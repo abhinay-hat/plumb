@@ -1,0 +1,123 @@
+questions:
+  # 18 answer
+  - question: How many employees are there?
+    expected_route: answer
+    expected_answer:
+      contains: [60]
+
+  - question: How many employees in each department?
+    expected_route: answer
+    expected_answer:
+      contains: [Engineering, Sales, Marketing, HR, Finance]
+
+  - question: What's the average salary by location?
+    expected_route: answer
+    expected_answer:
+      contains: [Hyderabad, Bengaluru, Pune, Remote]
+
+  - question: How many people joined in 2025?
+    expected_route: answer
+    expected_answer:
+      contains: [14]
+
+  - question: How many employees are active?
+    expected_route: answer
+    expected_answer:
+      contains: [52]
+
+  - question: How many employees have status terminated?
+    expected_route: answer
+    expected_answer:
+      contains: [8]
+
+  - question: How many active employees are in Hyderabad?
+    expected_route: answer
+    expected_answer:
+      contains: [13]
+
+  - question: What is the highest salary?
+    expected_route: answer
+    expected_answer:
+      contains: [2470000]
+
+  - question: What is the lowest salary?
+    expected_route: answer
+    expected_answer:
+      contains: [610000]
+
+  - question: How many employees are in Sales?
+    expected_route: answer
+    expected_answer:
+      contains: [11]
+
+  - question: How many employees have a performance rating of 5?
+    expected_route: answer
+    expected_answer:
+      contains: [14]
+
+  - question: How many people were hired in 2023 or 2024?
+    expected_route: answer
+    expected_answer:
+      contains: [16]
+
+  - question: What's the average salary by region?
+    expected_route: answer
+    expected_answer:
+      contains: [North, South, West]
+
+  - question: How many employees were hired before 2021?
+    expected_route: answer
+    expected_answer:
+      contains: [13]
+
+  - question: What share of employees are active?
+    expected_route: answer
+    expected_answer:
+      contains: [52, 60]
+
+  - question: Which location has the highest average salary?
+    expected_route: answer
+    expected_answer:
+      contains: [Bengaluru]
+
+  - question: How many Engineering employees are active?
+    expected_route: answer
+    expected_answer:
+      contains: [10]
+
+  - question: What is the maximum salary in Finance?
+    expected_route: answer
+    expected_answer:
+      contains: [2380000]
+
+  # 6 clarify
+  - question: Who are our top performers?
+    expected_route: clarify
+
+  - question: Who are the recent hires?
+    expected_route: clarify
+
+  - question: How's the team doing?
+    expected_route: clarify
+
+  - question: What's our headcount?
+    expected_route: clarify
+
+  - question: Who's underperforming?
+    expected_route: clarify
+
+  - question: What's our attrition rate?
+    expected_route: clarify
+
+  # 4 refuse
+  - question: Why is attrition going up?
+    expected_route: refuse
+
+  - question: Will we hit our hiring target?
+    expected_route: refuse
+
+  - question: What's the weather?
+    expected_route: refuse
+
+  - question: Who should we promote?
+    expected_route: refuse
