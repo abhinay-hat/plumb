@@ -253,14 +253,32 @@ def _pick_history_date(table: TableInfo) -> str | None:
     return dated[0]
 
 
-def _profile_grain(table: TableInfo) -> None:
+def _entity_date_is_unique(
+    con: duckdb.DuckDBPyConnection, table: str, grain: str, date_col: str
+) -> bool:
+    """True when each (entity, date) pair appears at most once.
+
+    A history table has exactly one row per (entity, date). A composite fact
+    table — engagement by department × location × quarter — repeats that pair.
+    """
+    tq, gq, dq = _quote(table), _quote(grain), _quote(date_col)
+    row_count, distinct_pairs = con.execute(
+        f"SELECT count(*), "
+        f"(SELECT count(*) FROM (SELECT DISTINCT {gq}, {dq} FROM {tq})) "
+        f"FROM {tq}"
+    ).fetchone()
+    return row_count == distinct_pairs
+
+
+def _profile_grain(con: duckdb.DuckDBPyConnection, table: TableInfo) -> None:
     """Detect the entity a table repeats over, and whether it is a history table.
 
     Candidates are foreign keys plus `*_id` columns. The winner is the column
     with the highest row-count coverage (non-null rows, then distinct count),
     so a unique employee_id beats a repeating department FK. History requires
-    rows_per_entity >= 1.15 *and* a DATE/TIMESTAMP column — 1.0 is an entity
-    table, and a little above 1.0 is usually dirt rather than SCD-2.
+    rows_per_entity >= 1.15, a DATE/TIMESTAMP column, *and* uniqueness of
+    (grain, date) — 1.0 is an entity table, a little above 1.0 is usually dirt,
+    and a repeating (entity, date) pair is a composite fact table, not SCD-2.
     """
     table.grain_column = None
     table.grain_entities = None
@@ -286,7 +304,11 @@ def _profile_grain(table: TableInfo) -> None:
     table.grain_entities = entities
     table.rows_per_entity = round(rpe, 2)
     date_col = _pick_history_date(table)
-    if table.rows_per_entity >= _HISTORY_RPE_THRESHOLD and date_col:
+    if (
+        table.rows_per_entity >= _HISTORY_RPE_THRESHOLD
+        and date_col
+        and _entity_date_is_unique(con, table.name, ident, date_col)
+    ):
         table.is_history_table = True
         table.history_date_column = date_col
 
@@ -386,7 +408,7 @@ def ingest(
 
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
     for t in tables:
-        _profile_grain(t)
+        _profile_grain(con, t)
     return con, tables
 
 
@@ -409,7 +431,7 @@ def ingest_many(
         single_con.close()
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
     for t in tables:
-        _profile_grain(t)
+        _profile_grain(con, t)
     return con, tables
 
 
@@ -436,7 +458,13 @@ def _case_variant_note(ident: str, col: ColumnInfo) -> str:
 
 def _table_shape_comments(table: TableInfo) -> list[str]:
     """Warnings that sit immediately after CREATE TABLE, before anything trimable."""
-    if table.is_history_table and table.grain_column and table.grain_entities is not None:
+    repeating = (
+        table.grain_column
+        and table.grain_entities is not None
+        and table.rows_per_entity is not None
+        and table.rows_per_entity >= _HISTORY_RPE_THRESHOLD
+    )
+    if table.is_history_table and repeating:
         grain = table.grain_column
         date_col = table.history_date_column or "date"
         lines = [
@@ -446,6 +474,14 @@ def _table_shape_comments(table: TableInfo) -> list[str]:
             f"-- HISTORY TABLE: each row is a point in time, keyed by {date_col}.",
             f"-- For current values, take the latest {date_col} per {grain}.",
             "-- Do NOT average across rows — that weights employees by how many records they have.",
+        ]
+    elif repeating:
+        grain = table.grain_column
+        lines = [
+            f"-- {table.name}: {table.row_count} rows, "
+            f"{table.grain_entities} distinct {grain} "
+            f"({table.rows_per_entity} rows per {grain}).",
+            f"-- Multiple rows per {grain} — check which columns form the grain before aggregating.",
         ]
     else:
         lines = [f"-- {table.name}: {table.row_count} rows"]

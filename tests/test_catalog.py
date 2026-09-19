@@ -171,6 +171,19 @@ def test_employees_is_not_history_table(hr_tables) -> None:
     assert employees.rows_per_entity == 1.0
 
 
+def test_engagement_survey_is_not_history_table(hr_tables) -> None:
+    survey = next(t for t in hr_tables if t.name.endswith("_engagement_survey"))
+    assert survey.is_history_table is False
+    card = catalog.render_schema(hr_tables)
+    block = next(
+        part
+        for part in card.split("CREATE TABLE ")
+        if part.startswith(survey.name)
+    )
+    assert "HISTORY TABLE" not in block
+    assert "Do NOT average" not in block
+
+
 def test_location_case_variants(hr_tables) -> None:
     employees = next(t for t in hr_tables if t.name.endswith("_employees"))
     location = _by_ident(employees)["location"]

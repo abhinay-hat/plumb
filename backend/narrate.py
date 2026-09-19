@@ -112,7 +112,9 @@ def verify_narration(
     allowed = _numbers_in_rows(rows)
     allowed |= _numbers_in_text(question)
     allowed |= _coverage_allowed(coverage)
-    for token in _NUMBER.findall(text or ""):
+    # ISO dates are not numbers; leaving them in lets `-01` parse as −1.
+    scanned = re.sub(r"\d{4}-\d{2}-\d{2}", " ", text or "")
+    for token in _NUMBER.findall(scanned):
         value = _normalise(token)
         if value is None:
             continue

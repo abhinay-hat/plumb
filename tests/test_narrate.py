@@ -93,3 +93,13 @@ def test_coverage_omission_is_filled_in(monkeypatch) -> None:
     assert "1,248" in text or "1248" in text
     assert "1,300" in text or "1300" in text
     assert narrate.verify_narration(text, [[3.19]], coverage=coverage)
+
+
+def test_iso_date_literal_is_not_parsed_as_negative_one() -> None:
+    text = "Counted employees hired before 2021-01-01. 143 rows matched."
+    assert narrate.verify_narration(text, [[143]])
+    assert not narrate.verify_narration(
+        "Counted employees hired before 2021-01-01. 999 rows matched.",
+        [[143]],
+        question="How many employees were hired before 2021?",
+    )
