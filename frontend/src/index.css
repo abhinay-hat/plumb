@@ -1,19 +1,21 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Sora", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Source Serif 4", "Iowan Old Style", Georgia, serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --color-paper: #e6eae8;
-  --color-ink: #1c2421;
-  --color-muted: #5c6b66;
-  --color-panel: #f3f5f4;
-  --color-line: #c5cdc8;
-  --color-answer: #1f6b5c;
-  --color-clarify: #b86a2d;
-  --color-clarify-tint: #f7ede3;
-  --color-refuse: #8a918d;
-  --color-sql: #1c2421;
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Red Hat Mono", ui-monospace, monospace;
+  --color-paper: #d5e2e6;
+  --color-chassis: #eef4f5;
+  --color-channel: #9eb3b8;
+  --color-ink: #152028;
+  --color-muted: #2c3a40;
+  --color-panel: #e4eef0;
+  --color-line: #9bb0b6;
+  --color-grid: #b8cbd0;
+  --color-answer: #1a5c68;
+  --color-clarify: #b13224;
+  --color-ticket: #f4f8f9;
+  --color-refuse: #5a6a70;
+  --color-sql: #152028;
 }
 
 html,
@@ -34,6 +36,69 @@ body {
   box-sizing: border-box;
 }
 
+::selection {
+  background: #c9dde1;
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-clarify);
+  outline-offset: 2px;
+}
+
+input,
+textarea {
+  caret-color: var(--color-clarify);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chart-bed {
+  background-color: var(--color-paper);
+  background-image:
+    linear-gradient(var(--color-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 0 0;
+}
+
+.pen-trace {
+  height: 2px;
+  width: 100%;
+  background: var(--color-clarify);
+  transform-origin: left center;
+  transform: scaleX(0);
+  animation: pen-draw 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+@keyframes pen-draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.stamp {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -41,5 +106,10 @@ body {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .pen-trace {
+    transform: scaleX(1);
+    animation: none;
   }
 }

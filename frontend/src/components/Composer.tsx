@@ -10,7 +10,7 @@ export function Composer({ disabled, onSubmit }: Props) {
 
   return (
     <form
-      className="flex gap-2 border-t border-line bg-white p-3"
+      className="flex shrink-0 items-end gap-3 border-t border-line bg-chassis px-4 py-2.5 sm:px-5 sm:py-3"
       onSubmit={(e) => {
         e.preventDefault();
         const question = value.trim();
@@ -19,17 +19,21 @@ export function Composer({ disabled, onSubmit }: Props) {
         setValue("");
       }}
     >
-      <input
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        disabled={disabled}
-        placeholder="Ask about the spreadsheet"
-        className="min-w-0 flex-1 border border-line bg-paper px-3 py-2.5 text-[14px] text-ink outline-none focus:border-ink disabled:opacity-50"
-      />
+      <label className="flex min-w-0 flex-1 items-baseline gap-3">
+        <span className="stamp shrink-0 text-answer">Run</span>
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={disabled}
+          aria-label="Question"
+          placeholder="Ask this sheet"
+          className="min-w-0 flex-1 border-0 border-b border-line bg-transparent py-1.5 text-[15px] text-ink outline-none placeholder:text-muted focus:border-ink disabled:opacity-50"
+        />
+      </label>
       <button
         type="submit"
         disabled={disabled || !value.trim()}
-        className="border border-ink bg-ink px-4 py-2 font-mono text-[11px] uppercase tracking-wide text-paper disabled:opacity-40"
+        className="shrink-0 bg-ink px-4 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-ticket hover:bg-answer disabled:bg-line disabled:text-muted"
       >
         Ask
       </button>

@@ -12,3 +12,9 @@ audit/
 *.egg-info/
 .coverage
 htmlcov/
+
+# Agent / tooling scratch — regenerable, never committed
+.impeccable/
+.serena/
+.playwright-cli/
+frontend/.playwright-cli/

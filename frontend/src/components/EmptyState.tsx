@@ -10,34 +10,32 @@ const EXAMPLES = [
 
 export function EmptyState({ onExample }: Props) {
   return (
-    <div className="flex h-full flex-col justify-center px-2 py-10">
-      <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">
-        Spreadsheet questions, with the SQL
-      </p>
-      <h1 className="mt-3 max-w-xl font-serif text-[34px] leading-[1.15] tracking-tight text-ink">
-        Upload a sheet. Ask in English. Check the work.
+    <div className="flex h-full flex-col justify-center px-1 py-6 sm:py-10">
+      <h1 className="max-w-xl font-sans text-[34px] font-semibold leading-[1.12] tracking-[-0.03em] text-ink">
+        {onExample
+          ? "Ask in English. Check the SQL."
+          : "Upload a sheet. Ask in English. Check the work."}
       </h1>
-      <p className="mt-4 max-w-lg text-[14px] leading-6 text-muted">
-        plumb answers, asks for a definition, or says the columns cannot support
-        the question. It does not guess.
+      <p className="mt-4 max-w-[65ch] text-[14px] leading-6 text-muted">
+        {onExample
+          ? "plumb will answer, ask what a term means, or refuse. It does not guess."
+          : "plumb answers, asks for a definition, or says the columns cannot support the question. It does not guess."}
       </p>
-      <ol className="mt-8 max-w-lg space-y-2">
-        {EXAMPLES.map((q, i) => (
-          <li key={q}>
-            <button
-              type="button"
-              onClick={() => onExample?.(q)}
-              disabled={!onExample}
-              className="w-full border border-line bg-white px-3 py-2.5 text-left hover:border-ink disabled:cursor-default"
-            >
-              <span className="mr-3 font-mono text-[11px] text-muted">
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <span className="text-[13px] text-ink">{q}</span>
-            </button>
-          </li>
-        ))}
-      </ol>
+      {onExample ? (
+        <ul className="mt-8 max-w-lg space-y-2">
+          {EXAMPLES.map((q) => (
+            <li key={q}>
+              <button
+                type="button"
+                onClick={() => onExample(q)}
+                className="w-full border border-line bg-ticket px-3 py-2.5 text-left text-[13px] text-ink hover:border-ink"
+              >
+                {q}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

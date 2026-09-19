@@ -18,8 +18,8 @@ export function UploadZone({ disabled, onFiles }: Props) {
   return (
     <label
       className={[
-        "block cursor-pointer border border-dashed px-3 py-5 text-center transition-colors",
-        over ? "border-clarify bg-clarify-tint" : "border-line bg-panel",
+        "block cursor-pointer border px-3 py-5 text-center transition-colors",
+        over ? "border-clarify bg-ticket" : "border-line bg-panel",
         disabled ? "pointer-events-none opacity-50" : "",
       ].join(" ")}
       onDragOver={(e) => {
@@ -38,6 +38,7 @@ export function UploadZone({ disabled, onFiles }: Props) {
         accept={ACCEPT}
         multiple
         className="sr-only"
+        aria-label="Upload spreadsheet"
         disabled={disabled}
         onChange={(e) => {
           take(e.target.files);

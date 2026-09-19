@@ -151,12 +151,18 @@ export default function App() {
     await runAsk(question);
   }
 
+  const tableLabel = sessionId
+    ? `${tables.length} table${tables.length === 1 ? "" : "s"}`
+    : "no file";
+
   return (
-    <div className="flex h-svh min-h-0 w-full overflow-hidden bg-paper">
-      <aside className="flex w-[280px] shrink-0 flex-col border-r border-line bg-panel">
+    <div className="flex h-svh min-h-0 w-full overflow-hidden bg-channel max-lg:flex-col">
+      <aside className="flex w-[272px] shrink-0 flex-col bg-chassis max-lg:w-full max-lg:max-h-[30vh] max-lg:border-b max-lg:border-line">
         <div className="border-b border-line px-4 py-4">
-          <p className="font-serif text-[22px] leading-none text-ink">plumb</p>
-          <p className="mt-1 font-mono text-[11px] tracking-wide text-muted">
+          <p className="font-sans text-[22px] font-semibold leading-none tracking-tight text-ink">
+            plumb
+          </p>
+          <p className="mt-1.5 font-mono text-[11px] text-muted">
             answers you can check
           </p>
         </div>
@@ -166,11 +172,11 @@ export default function App() {
             <p className="mt-2 font-mono text-[11px] text-clarify">{uploadError}</p>
           ) : null}
           {tables.length > 0 ? (
-            <div className="mt-5">
+            <div className="mt-4">
               <SchemaPanel tables={tables} />
             </div>
           ) : (
-            <p className="mt-4 font-mono text-[11px] leading-4 text-muted">
+            <p className="mt-4 text-[12px] leading-5 text-muted">
               Load a CSV, TSV, or XLSX. Columns and sample values appear here so you
               can confirm the file was read as you expect.
             </p>
@@ -178,36 +184,43 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-white px-5">
-          <p className="truncate font-mono text-[12px] text-muted">
-            {sessionId ? `${tables.length} table(s) loaded` : "No file loaded"}
+      <div className="w-2 shrink-0 bg-channel max-lg:hidden" aria-hidden />
+
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-line bg-chassis px-5">
+          <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
+            {tableLabel}
           </p>
           <button
             type="button"
             disabled={!sessionId}
+            aria-expanded={auditOpen}
             onClick={() => {
               setAuditOpen(true);
               if (sessionId) void refreshAudit(sessionId);
             }}
-            className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink disabled:text-muted"
+            className="stamp text-ink hover:text-answer disabled:text-muted"
           >
             Audit
           </button>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        <div className="chart-bed min-h-0 flex-1 overflow-y-auto px-5 py-6">
           {!sessionId ? (
             <EmptyState />
           ) : turns.length === 0 ? (
             <EmptyState onExample={(q) => void runAsk(q)} />
           ) : (
-            <div className="mx-auto flex max-w-3xl flex-col gap-4">
+            <div className="mx-auto flex max-w-3xl flex-col gap-5">
               {turns.map((turn) => {
                 if (turn.kind === "user") {
                   return (
-                    <p key={turn.id} className="text-right font-sans text-[14px] text-ink">
-                      {turn.question}
+                    <p
+                      key={turn.id}
+                      className="flex gap-3 font-mono text-[12px] leading-5 text-muted"
+                    >
+                      <span className="shrink-0 uppercase tracking-[0.14em]">Q</span>
+                      <span className="font-sans text-[14px] text-ink">{turn.question}</span>
                     </p>
                   );
                 }

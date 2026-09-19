@@ -1,7 +1,10 @@
-import { useState } from "react";
-import { VegaEmbed as VegaLite } from "react-vega";
+import { lazy, Suspense, useState } from "react";
 import type { VisualizationSpec } from "vega-embed";
 import type { AskResponse, Cell } from "../types";
+
+const VegaLite = lazy(() =>
+  import("react-vega").then((mod) => ({ default: mod.VegaEmbed })),
+);
 
 interface Props {
   response: AskResponse;
@@ -54,15 +57,15 @@ export function AnswerCard({ response }: Props) {
   }
 
   return (
-    <article className="border border-line bg-white">
+    <article className="border border-line bg-ticket">
       <header className="flex items-center justify-between border-b border-line px-4 py-2">
-        <span className="font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-answer">
-          Answer
+        <span className="stamp text-answer">Answer</span>
+        <span className="font-mono text-[10px] tabular-nums text-muted">
+          {response.elapsed_ms} ms
         </span>
-        <span className="font-mono text-[10px] text-muted">{response.elapsed_ms} ms</span>
       </header>
       {response.narration ? (
-        <p className="px-4 pt-4 font-serif text-[17px] leading-[1.55] text-ink">
+        <p className="px-4 pt-4 text-[16px] leading-[1.5] text-ink">
           {response.narration}
         </p>
       ) : null}
@@ -95,14 +98,14 @@ export function AnswerCard({ response }: Props) {
             </thead>
             <tbody>
               {rows.map((row, i) => (
-                <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-panel/80"}>
+                <tr key={i} className={i % 2 === 0 ? "bg-ticket" : "bg-panel"}>
                   {columns.map((col, j) => {
                     const value = row[j] ?? null;
                     return (
                       <td
                         key={col}
                         className={[
-                          "px-3 py-1.5 font-mono text-[12px] text-ink",
+                          "border-b border-line px-3 py-1.5 font-mono text-[12px] text-ink",
                           isNumeric(value) ? "text-right tabular-nums" : "",
                         ].join(" ")}
                       >
@@ -118,10 +121,12 @@ export function AnswerCard({ response }: Props) {
       ) : null}
       {response.chart && columns.length > 0 ? (
         <div className="min-w-0 overflow-hidden px-4 pb-4">
-          <VegaLite
-            spec={withValues(response.chart, columns, rows)}
-            options={{ actions: false }}
-          />
+          <Suspense fallback={<div className="h-48 bg-panel" aria-hidden />}>
+            <VegaLite
+              spec={withValues(response.chart, columns, rows)}
+              options={{ actions: false }}
+            />
+          </Suspense>
         </div>
       ) : null}
       {response.sql ? (
@@ -129,17 +134,17 @@ export function AnswerCard({ response }: Props) {
           <summary className="cursor-pointer px-4 py-2 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
             Show SQL
           </summary>
-          <div className="relative bg-sql px-4 py-3">
+          <div className="relative border-t border-line bg-panel px-4 py-3">
             <button
               type="button"
               onClick={() => {
                 void copySql();
               }}
-              className="absolute right-3 top-3 font-mono text-[10px] uppercase tracking-wide text-clarify-tint"
+              className="absolute right-3 top-3 stamp text-answer hover:text-ink"
             >
               {copied ? "Copied" : "Copy"}
             </button>
-            <pre className="overflow-x-auto whitespace-pre-wrap pr-14 font-mono text-[12px] leading-5 text-paper">
+            <pre className="overflow-x-auto whitespace-pre-wrap pr-14 font-mono text-[12px] leading-5 text-ink">
               {response.sql}
             </pre>
           </div>
