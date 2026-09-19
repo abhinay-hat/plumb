@@ -113,6 +113,11 @@ changing `AskResponse` means changing both. Picking a clarify option calls
 - `evals/questions.yaml` is a held-out set — `evals/run.py` says "do not tune prompts
   first". If you change the planner prompt, re-run `make eval` and record the honest number
   in `evals/results.md` and `README.md`.
+- **No agent attribution in commits.** `.githooks/commit-msg` strips `Co-authored-by:` and
+  `Claude-Session:` trailers. GitHub writes those into a contributor-index row that a
+  history rewrite does *not* retract — the repo had to be deleted and recreated twice to
+  clear `cursoragent` from the sidebar. `core.hooksPath` is local config, so a fresh clone
+  needs `git config core.hooksPath .githooks` once.
 
 ## Not committed
 

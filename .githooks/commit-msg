@@ -1,0 +1,13 @@
+#!/bin/sh
+# Strip agent attribution trailers before a commit is written.
+#
+# Cursor and Claude Code both append Co-authored-by / Claude-Session trailers.
+# GitHub turns those into contributor-index rows that survive a history
+# rewrite — removing the trailer later does not retract the row, so the repo
+# had to be deleted and recreated twice. The only reliable fix is to never
+# write them in the first place.
+#
+# Enable in a fresh clone:  git config core.hooksPath .githooks
+
+grep -v -i -E '^(Co-authored-by:|Claude-Session:|Generated with )' "$1" | cat -s > "$1.tmp"
+mv "$1.tmp" "$1"
