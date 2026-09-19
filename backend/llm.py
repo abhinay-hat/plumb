@@ -5,6 +5,14 @@ from __future__ import annotations
 import os
 
 import httpx
+from dotenv import load_dotenv
+
+# Docker Compose reads .env on its own, but `make dev`, `make demo`, and
+# `make eval` run the interpreter directly — without this they saw neither
+# GROQ_API_KEY nor the PLUMB_MODEL pin and fell back to a default model that
+# 404s. Load it here because this module is the only reader of those vars.
+# override=False so an exported shell value still wins over the file.
+load_dotenv(override=False)
 
 TIMEOUT_SECONDS = 30.0
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
