@@ -38,6 +38,14 @@ make eval
 
 Groq's `llama-3.3-70b-versatile` (the engine default) currently 404s on this key. Docker Compose sets `PLUMB_MODEL=openai/gpt-oss-20b` unless you override it.
 
+## Tests
+
+```bash
+make test
+```
+
+No LLM required. The suite covers the deterministic modules — guard, catalog, chart, narration verification, session store, HTTP surface. Anything that routes or narrates needs a live provider, which is why the routing number lives in `make eval` and not here.
+
 ## Architecture
 
 1. A spreadsheet is profiled into DuckDB and a schema card.
