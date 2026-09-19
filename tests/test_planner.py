@@ -93,11 +93,36 @@ def test_rate_limit_propagates_instead_of_becoming_a_refusal(monkeypatch) -> Non
 
 
 def test_other_llm_errors_still_refuse(monkeypatch) -> None:
+    calls = 0
+
     def boom(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
         raise llm.LLMError("garbage")
 
     monkeypatch.setattr(planner.llm, "complete", boom)
-    assert planner.plan("q", "schema", {}, []).route == "refuse"
+    result = planner.plan("q", "schema", {}, [])
+    assert result.route == "refuse"
+    assert "could not read" in (result.refuse_reason or "")
+    assert calls == 2
+
+
+def test_parse_plan_skips_harmony_preamble() -> None:
+    raw = 'User Safety: safe\n{"route": "chat", "reply": "Hi", "sql": null, "chart": "none"}'
+    plan = planner._parse_plan(raw)
+    assert plan.route == "chat"
+    assert plan.reply == "Hi"
+
+
+def test_unreadable_output_does_not_leak_provider_internals(monkeypatch) -> None:
+    def boom(*_args, **_kwargs):
+        raise ValueError("no JSON object in model output: User Safety: safe")
+
+    monkeypatch.setattr(planner.llm, "complete", boom)
+    result = planner.plan("platform wise pie chart", "schema", {}, [])
+    assert result.route == "refuse"
+    assert "User Safety" not in (result.refuse_reason or "")
+    assert "could not read" in (result.refuse_reason or "")
 
 
 def test_only_two_history_turns_are_sent(monkeypatch) -> None:

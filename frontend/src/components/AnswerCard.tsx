@@ -8,6 +8,8 @@ const VegaLite = lazy(() =>
 
 interface Props {
   response: AskResponse;
+  /** Asking a follow-up is the same as typing it; the composer owns the turn. */
+  onAsk?: (question: string) => void;
 }
 
 function isNumeric(value: Cell): boolean {
@@ -43,11 +45,13 @@ function withValues(
   } as VisualizationSpec;
 }
 
-export function AnswerCard({ response }: Props) {
+export function AnswerCard({ response, onAsk }: Props) {
   const [copied, setCopied] = useState(false);
   const columns = response.columns ?? [];
   const rows = response.rows ?? [];
   const defs = Object.entries(response.definitions_applied);
+  const advice = response.chart_advice;
+  const followUps = response.follow_ups ?? [];
 
   async function copySql() {
     if (!response.sql) return;
@@ -57,11 +61,14 @@ export function AnswerCard({ response }: Props) {
   }
 
   return (
-    <article className="border border-line bg-ticket">
-      <header className="flex items-center justify-between border-b border-line px-4 py-2">
+    <article className="border-0 bg-transparent">
+      <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-line px-4 py-2">
         <span className="stamp text-answer">Answer</span>
         <span className="font-mono text-[10px] tabular-nums text-muted">
-          {response.elapsed_ms} ms
+          {rows.length} row{rows.length === 1 ? "" : "s"} · {response.elapsed_ms} ms ·{" "}
+          {response.endpoint_host || response.provider}
+          {response.model ? ` · ${response.model}` : ""}
+          {response.chart ? " · chart" : ""}
         </span>
       </header>
       {response.narration ? (
@@ -79,6 +86,52 @@ export function AnswerCard({ response }: Props) {
               {term} = {meaning}
             </span>
           ))}
+        </div>
+      ) : null}
+      {response.chart && columns.length > 0 ? (
+        <div className="min-w-0 overflow-hidden border-t border-line/80 px-4 py-4">
+          <p className="stamp mb-3 text-answer">
+            Chart{advice?.rendered ? ` · ${advice.rendered}` : ""}
+          </p>
+          <Suspense fallback={<div className="h-48 bg-panel" aria-hidden />}>
+            <VegaLite
+              spec={withValues(response.chart, columns, rows)}
+              options={{ actions: false }}
+            />
+          </Suspense>
+        </div>
+      ) : null}
+      {advice && (advice.reason || advice.unsupported) ? (
+        <div className="border-t border-line/80 px-4 py-3">
+          <p className="stamp mb-1.5 text-muted">
+            {advice.kind === "none"
+              ? "No chart"
+              : advice.rendered === advice.kind
+                ? `Why a ${advice.kind}`
+                : `Better as a ${advice.kind}`}
+          </p>
+          <p className="text-[13px] leading-[1.5] text-muted">{advice.reason}</p>
+          {advice.unsupported ? (
+            <p className="mt-1.5 text-[13px] leading-[1.5] text-clarify">
+              These columns describe a {advice.unsupported}, which plumb does not
+              render — the {advice.kind === "none" ? "table" : advice.kind} above is
+              the closest honest view.
+            </p>
+          ) : null}
+          {advice.alternatives.length > 0 && onAsk ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {advice.alternatives.map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => onAsk(`Show this as a ${kind} chart.`)}
+                  className="border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-muted hover:border-answer hover:text-ink"
+                >
+                  as {kind}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {columns.length > 0 ? (
@@ -119,19 +172,26 @@ export function AnswerCard({ response }: Props) {
           </table>
         </div>
       ) : null}
-      {response.chart && columns.length > 0 ? (
-        <div className="min-w-0 overflow-hidden px-4 pb-4">
-          <Suspense fallback={<div className="h-48 bg-panel" aria-hidden />}>
-            <VegaLite
-              spec={withValues(response.chart, columns, rows)}
-              options={{ actions: false }}
-            />
-          </Suspense>
+      {followUps.length > 0 && onAsk ? (
+        <div className="border-t border-line/80 px-4 py-3">
+          <p className="stamp mb-2 text-muted">Next</p>
+          <div className="flex flex-wrap gap-1.5">
+            {followUps.map((question) => (
+              <button
+                key={question}
+                type="button"
+                onClick={() => onAsk(question)}
+                className="border border-line bg-panel px-2 py-1 text-left text-[12px] text-muted hover:border-answer hover:text-ink"
+              >
+                {question}
+              </button>
+            ))}
+          </div>
         </div>
       ) : null}
       {response.sql ? (
         <details className="border-t border-line">
-          <summary className="cursor-pointer px-4 py-2 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+          <summary className="cursor-pointer px-4 py-2 stamp text-muted hover:text-ink">
             Show SQL
           </summary>
           <div className="relative border-t border-line bg-panel px-4 py-3">

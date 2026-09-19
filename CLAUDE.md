@@ -34,9 +34,22 @@ and `:8000` for the built SPA.
 ## LLM providers
 
 `backend/llm.py` is the only network call. `PLUMB_PROVIDER` is `groq` (default, needs
-`GROQ_API_KEY`) or `ollama` (`http://localhost:11434`, no key). `PLUMB_MODEL` overrides the
-per-provider default. Groq's `llama-3.3-70b-versatile` default currently 404s on the repo
-key; Docker Compose and `.env` pin `openai/gpt-oss-20b`.
+`GROQ_API_KEY`), `openrouter` (`OPENROUTER_API_KEY`), `ollama` (`http://localhost:11434`,
+no key), or `custom` (any OpenAI-compatible `/v1/chat/completions` URL). `PLUMB_MODEL`
+overrides the per-provider default. Groq withdrew `llama-3.3-70b-versatile` from the
+free plan on 16 August 2026; Docker Compose and `.env` pin `openai/gpt-oss-20b`.
+
+The picker roster is **discovered, not declared**. `providers.models_for` asks each
+provider's own `/v1/models` (5-minute cache, 4s timeout) and filters on fields the
+payload publishes — text output, a JSON capability, and on OpenRouter a zero price.
+`FALLBACK_MODELS` is what shows when discovery cannot run; it is not a curated list, so
+do not "update" it when a provider changes its line-up. `PLUMB_LIVE_MODELS=0` disables
+discovery, which `tests/conftest.py` sets for the whole suite so `make test` stays off
+the network.
+
+A user-supplied custom URL is untrusted input. `backend/endpoint_guard.py` validates
+it the same way `guard.py` validates SQL: scheme, resolved address, pinned IP, no
+redirects, port allowlist. Custom keys live on the session, not in `os.environ`.
 
 `make test` does **not** hit an LLM — tests cover the deterministic modules (guard,
 catalog, chart, narration verification, session store, HTTP surface). Anything touching
@@ -64,6 +77,17 @@ creeping into `app.py` or the frontend, it belongs in the pipeline.
 5. `chart.build_spec` assembles the Vega-Lite spec **in Python** from the plan's chart type
    and column names. A model-authored spec is never used: Vega-Lite renders an invalid spec
    as a blank chart instead of throwing, so errors would be silent.
+6. `chart.recommend` reads the *result rows* — row count, distinct categories, dtype per
+   axis, sign, share spread — and ranks every chart kind by a score computed from those
+   measurements. No kind sits behind a hand-picked threshold; `MIN_ROWS`/`MAX_ROWS` are the
+   renderer's limits, not taste. The winner, its reason, and same-class alternatives ship as
+   `AskResponse.chart_advice`, alongside `rendered` (what was actually drawn) — so "you got
+   a pie, a bar reads better here" is sayable. `unsupported` names a shape plumb cannot
+   draw (candlestick) rather than silently omitting a chart.
+7. `suggestions.follow_ups` builds next questions from the columns this answer returned,
+   same rule as `suggest_questions`: every line names a real column, and the list comes back
+   short rather than padded. `_is_measure` keeps ids out of "average X" by cardinality ratio
+   and `catalog.foreign_key_columns`, never by name suffix.
 
 ### guard.py is the security boundary
 

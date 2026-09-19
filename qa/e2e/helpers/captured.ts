@@ -8,6 +8,8 @@ export const SESSION_ID = "e2e-stub-session";
 export const TABLES = [
   {
     name: "northwind_hr_analytics_employees",
+    display_name: "employees",
+    sheet_name: "employees",
     row_count: 640,
     columns: [
       { name: "employee_id", dtype: "BIGINT", null_count: 0, distinct_count: 640, samples: ["10016"] },
@@ -18,6 +20,8 @@ export const TABLES = [
   },
   {
     name: "northwind_hr_analytics_compensation",
+    display_name: "compensation",
+    sheet_name: "compensation",
     row_count: 1303,
     columns: [
       { name: "employee_id", dtype: "BIGINT", null_count: 0, distinct_count: 640, samples: ["10001"] },
@@ -27,6 +31,8 @@ export const TABLES = [
   },
   {
     name: "northwind_hr_analytics_performance_reviews",
+    display_name: "performance_reviews",
+    sheet_name: "performance_reviews",
     row_count: 1300,
     columns: [
       { name: "performance_rating", dtype: "DOUBLE", null_count: 52, distinct_count: 9, samples: ["3.0"] },

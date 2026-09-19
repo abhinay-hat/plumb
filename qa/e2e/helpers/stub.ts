@@ -1,15 +1,33 @@
 import type { Page } from "@playwright/test";
 import { ASKS, SESSION_ID, TABLES } from "./captured";
 
+const STUB_SUGGESTIONS = [
+  "How many employees in each department?",
+  "What's the average base salary inr by department?",
+  "Who are the top employees by base salary inr?",
+];
+
 export async function stubBackend(page: Page) {
   await page.route("**/api/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
   });
 
+  await page.route("**/api/session", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({ json: { session_id: SESSION_ID } });
+  });
+
   await page.route("**/api/upload", async (route) => {
     await route.fulfill({
-      json: { session_id: SESSION_ID, tables: TABLES },
+      json: { session_id: SESSION_ID, tables: TABLES, suggestions: STUB_SUGGESTIONS },
     });
+  });
+
+  await page.route("**/api/session/*/suggestions", async (route) => {
+    await route.fulfill({ json: { suggestions: STUB_SUGGESTIONS } });
   });
 
   await page.route("**/api/ask", async (route) => {

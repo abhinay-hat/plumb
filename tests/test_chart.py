@@ -82,6 +82,58 @@ def test_row_count_bounds() -> None:
     assert chart.build_spec(bar_plan(), COLUMNS, too_many, DTYPES) is None
 
 
+def test_visualization_kind_detects_bar_follow_up() -> None:
+    assert chart.visualization_kind("can you give me in bar chart") == "bar"
+    assert chart.visualization_kind("show as a line chart") == "line"
+    assert chart.visualization_kind("Can you give me the platform wise pie chart?") == "pie"
+    assert chart.visualization_kind("How many employees?") is None
+
+
+def test_infer_axes_picks_category_and_measure() -> None:
+    axes = chart.infer_axes(["stp_name", "sheet1_count"], {"stp_name": "VARCHAR", "sheet1_count": "BIGINT"})
+    assert axes == ("stp_name", "sheet1_count")
+
+
+def test_enrich_dtypes_infers_aggregate_aliases_from_rows() -> None:
+    table = {"department": "VARCHAR"}
+    enriched = chart.enrich_dtypes(
+        ["department", "headcount"],
+        [["Engineering", 12], ["Sales", 9]],
+        table,
+    )
+    assert enriched["headcount"] == "BIGINT"
+    assert chart.infer_axes(["department", "headcount"], enriched) == (
+        "department",
+        "headcount",
+    )
+
+
+def test_build_spec_for_question_infers_bar_when_plan_has_none() -> None:
+    plan = Plan(route="answer", sql="SELECT 1", chart="none")
+    columns = ["stp_name", "sheet1_count"]
+    rows = [["A", 10], ["B", 5]]
+    dtypes = {"stp_name": "VARCHAR", "sheet1_count": "BIGINT"}
+    spec, kind = chart.build_spec_for_question(
+        "can you give me in bar chart", plan, columns, rows, dtypes
+    )
+    assert kind == "bar"
+    assert spec is not None
+    assert spec["mark"]["type"] == "bar"
+
+
+def test_build_spec_for_question_infers_bar_without_alias_in_table_schema() -> None:
+    plan = Plan(route="answer", sql="SELECT 1", chart="none")
+    columns = ["department", "headcount"]
+    rows = [["Engineering", 12], ["Sales", 9]]
+    table_dtypes = {"department": "VARCHAR"}
+    spec, kind = chart.build_spec_for_question(
+        "can you give me in bar chart", plan, columns, rows, table_dtypes
+    )
+    assert kind == "bar"
+    assert spec is not None
+    assert spec["encoding"]["y"]["type"] == "quantitative"
+
+
 def test_second_measure_becomes_colour() -> None:
     columns = ["department", "headcount", "location"]
     rows = [["Engineering", 12, "Pune"], ["Sales", 9, "Remote"]]

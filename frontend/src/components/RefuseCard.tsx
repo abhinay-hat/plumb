@@ -6,8 +6,8 @@ interface Props {
 
 export function RefuseCard({ response }: Props) {
   return (
-    <article className="border border-line bg-panel">
-      <header className="flex items-center justify-between px-4 py-2">
+    <article className="border-0 bg-transparent">
+      <header className="flex items-center justify-between border-b border-line px-4 py-2">
         <span className="stamp text-refuse">Out of range</span>
         <span className="font-mono text-[10px] tabular-nums text-muted">
           {response.elapsed_ms} ms

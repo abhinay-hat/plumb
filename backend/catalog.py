@@ -304,6 +304,20 @@ def _fk_column_idents(table_name: str) -> set[str]:
     return found
 
 
+def foreign_key_columns(table: TableInfo) -> set[str]:
+    """Original headers of the columns detected as foreign keys into other sheets.
+
+    A join key is numeric and would average into nonsense, so anything ranking
+    columns as measures needs to know which ones only point at another row.
+    """
+    idents = _fk_column_idents(table.name)
+    return {
+        col.name
+        for ident, col in zip(identifiers(table), table.columns)
+        if ident in idents
+    }
+
+
 def _pick_history_date(table: TableInfo) -> str | None:
     dated = [
         ident

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import duckdb
 
-from backend import catalog, chart, guard, llm, narrate
+from backend import catalog, chart, guard, llm, narrate, suggestions
 from backend.models import AskResponse, Plan, TableInfo
 from backend.planner import plan as make_plan
 
@@ -24,6 +24,13 @@ class Session:
     definitions: dict[str, str] = field(default_factory=dict)
     history: list[dict] = field(default_factory=list)
     clarify_counts: dict[str, int] = field(default_factory=dict)
+    provider: str = ""
+    model: str = ""
+    endpoint_url: str | None = None
+    endpoint_key: str | None = None
+    endpoint_host: str | None = None
+    endpoint_ip: str | None = None
+    preset_id: str | None = None
 
     def settle(self, term: str, definition: str) -> None:
         """Record a chosen clarify option so later turns stop asking."""
@@ -117,6 +124,18 @@ def _break_clarify_loop(
 
 def ask(question: str, session: Session) -> AskResponse:
     """Answer a question about the loaded spreadsheet, or ask one back."""
+    token = llm.bind(llm.session_endpoint(session))
+    try:
+        response = _ask(question, session)
+        response.provider = llm.current_provider()
+        response.model = llm.current_model()
+        response.endpoint_host = llm.current_host()
+        return response
+    finally:
+        llm.reset(token)
+
+
+def _ask(question: str, session: Session) -> AskResponse:
     started = time.perf_counter()
 
     def elapsed() -> int:
@@ -160,6 +179,19 @@ def ask(question: str, session: Session) -> AskResponse:
             )
         if plan.route == "clarify":
             plan = _break_clarify_loop(question, plan, session, schema_card, applied)
+    except llm.ProviderUnavailableError as e:
+        log.warning("provider model unavailable, not refusing: %s", e)
+        return AskResponse(
+            route="error",
+            error_code="provider_unavailable",
+            error_message=(
+                "That model is unavailable right now, so this question was never "
+                "answered. Nothing is wrong with your data — pick another model."
+            ),
+            definitions_applied=applied,
+            elapsed_ms=elapsed(),
+            tables_sent=sent_names,
+        )
     except llm.RateLimitError as e:
         # The provider never looked at the data. Calling this a refusal would
         # tell the user their spreadsheet cannot answer the question, which is
@@ -235,9 +267,22 @@ def ask(question: str, session: Session) -> AskResponse:
         log.warning("narration cited an unsupported number, discarding: %s", narration)
         narration = narrate._with_coverage(f"{len(rows)} rows returned.", coverage)
 
-    spec = chart.build_spec(plan, columns, rows, session.dtypes())
+    dtypes = session.dtypes()
+    spec, chart_kind = chart.build_spec_for_question(question, plan, columns, rows, dtypes)
     if spec is not None:
         spec["data"] = {"values": [dict(zip(columns, row)) for row in rows]}
+    elif chart.visualization_kind(question):
+        log.info(
+            "chart requested but no spec could be built: columns=%s rows=%d plan.chart=%s",
+            columns,
+            len(rows),
+            plan.chart,
+        )
+
+    # What the rows say the chart should be, independent of what the model
+    # asked for — so a rendered pie and a better bar are both on the table.
+    advice = chart.recommend(columns, rows, dtypes)
+    advice.rendered = chart_kind
 
     session.history.append({"question": question, "route": "answer", "sql": sql})
     return AskResponse(
@@ -247,6 +292,10 @@ def ask(question: str, session: Session) -> AskResponse:
         rows=rows,
         narration=narration,
         chart=spec,
+        chart_advice=advice,
+        follow_ups=suggestions.follow_ups(
+            columns, rows, session.tables, advice=advice, rendered=chart_kind
+        ),
         definitions_applied=applied,
         elapsed_ms=elapsed(),
         tables_sent=sent_names,

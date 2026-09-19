@@ -18,7 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
-from backend import audit, catalog, guard, llm, narrate, pipeline
+import duckdb
+
+from backend import audit, catalog, guard, llm, narrate, pipeline, suggestions
+from backend.endpoint_guard import EndpointError
 from backend.models import AskResponse
 from backend.pipeline import Session
 from backend.session import store
@@ -57,6 +60,24 @@ class SettleBody(BaseModel):
     definition: str = Field(min_length=1)
 
 
+class ModelBody(BaseModel):
+    provider: str
+    model: str = Field(min_length=1)
+
+
+class ProviderBody(BaseModel):
+    provider: str
+    model: str = Field(min_length=1)
+    url: str | None = None
+    key: str | None = None
+
+
+class ProbeBody(BaseModel):
+    url: str
+    model: str = Field(min_length=1)
+    key: str | None = None
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Name the provider and model on boot.
@@ -73,13 +94,31 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "GROQ_API_KEY is not set — every question will fail. "
             "Put it in .env (see .env.example) or set PLUMB_PROVIDER=ollama."
         )
+    if provider == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
+        log.warning(
+            "OPENROUTER_API_KEY is not set — every question will fail. "
+            "Put it in .env (see .env.example) or pick Groq or Ollama."
+        )
     yield
+
+
+def _cors_origins() -> list[str]:
+    """Where the dev SPA is served from. The built SPA is same-origin and needs none.
+
+    Hardcoding the Vite port means a second checkout on :5174, or a deploy on a
+    real hostname, silently fails CORS with no setting to turn.
+    """
+    configured = os.environ.get("PLUMB_CORS_ORIGINS", "").strip()
+    if configured:
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    port = os.environ.get("PLUMB_DEV_PORT", "5173").strip() or "5173"
+    return [f"http://localhost:{port}", f"http://127.0.0.1:{port}"]
 
 
 app = FastAPI(title="plumb", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -114,13 +153,27 @@ def _save_upload(upload: UploadFile) -> str:
 
 
 def _provider() -> str:
-    return os.environ.get("PLUMB_PROVIDER", "groq").strip().lower() or "groq"
+    return llm.current_provider()
 
 
 def _model() -> str:
-    if _provider() == "ollama":
-        return os.environ.get("PLUMB_MODEL", llm.OLLAMA_MODEL)
-    return os.environ.get("PLUMB_MODEL", llm.GROQ_MODEL)
+    return llm.current_model()
+
+
+def _session_from_pin(con: duckdb.DuckDBPyConnection, tables: list) -> Session:
+    guard.safe_connection(con)
+    pin = llm.env_pin()
+    return Session(
+        con=con,
+        tables=tables,
+        provider=pin.provider,
+        model=pin.model,
+        endpoint_url=pin.url,
+        endpoint_key=pin.key,
+        endpoint_host=pin.host,
+        endpoint_ip=pin.ip,
+        preset_id=pin.preset_id,
+    )
 
 
 def _log_turn(session_id: str, question: str, response: AskResponse) -> None:
@@ -138,8 +191,9 @@ def _log_turn(session_id: str, question: str, response: AskResponse) -> None:
             "sql": response.sql,
             "row_count": row_count,
             "elapsed_ms": response.elapsed_ms,
-            "model": _model(),
-            "provider": _provider(),
+            "model": response.model or _model(),
+            "provider": response.provider or _provider(),
+            "host": response.endpoint_host,
             "guard_errors": [],
             # Distinct from guard_errors on purpose: a rate limit says nothing
             # about the SQL or the data, so it must not read as one.
@@ -147,6 +201,12 @@ def _log_turn(session_id: str, question: str, response: AskResponse) -> None:
             "tables_sent": response.tables_sent,
             "definitions_applied": dict(response.definitions_applied),
             "narration_verified": verified,
+            "chart_kind": (
+                response.chart.get("mark", {}).get("type")
+                if isinstance(response.chart, dict)
+                else None
+            ),
+            "chart_rendered": response.chart is not None,
         },
     )
 
@@ -162,6 +222,30 @@ async def handle_app_error(_request: Request, exc: AppError) -> JSONResponse:
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/models")
+def get_models(session_id: str | None = None) -> dict[str, object]:
+    session = store.get(session_id) if session_id else None
+    return llm.catalog(session)
+
+
+@app.post("/api/models")
+def set_models(body: ModelBody) -> dict[str, object]:
+    try:
+        llm.configure(body.provider, body.model)
+    except ValueError as e:
+        raise AppError("invalid_model", str(e), 400) from e
+    log.info("model pin: provider=%s model=%s", _provider(), _model())
+    return llm.catalog()
+
+
+@app.post("/api/session")
+def create_session() -> dict[str, str]:
+    """Empty session so the UI can chat or switch models before any upload."""
+    con = duckdb.connect(database=":memory:")
+    session_id = store.create(_session_from_pin(con, []))
+    return {"session_id": session_id}
 
 
 @app.post("/api/upload")
@@ -185,9 +269,13 @@ async def upload(
             raise AppError("ingest_failed", str(e), 400) from e
         except Exception as e:
             raise AppError("ingest_failed", f"could not read the spreadsheet: {e}", 400) from e
-        guard.safe_connection(con)
-        session_id = store.create(Session(con=con, tables=tables))
-        return {"session_id": session_id, "tables": [t.model_dump() for t in tables]}
+        session_id = store.create(_session_from_pin(con, tables))
+        dumped = [t.model_dump() for t in tables]
+        return {
+            "session_id": session_id,
+            "tables": dumped,
+            "suggestions": suggestions.suggest_questions(tables),
+        }
     finally:
         for path in saved:
             parent = Path(path).parent
@@ -215,6 +303,51 @@ def ask(body: AskBody) -> AskResponse:
     return response
 
 
+def _raise_provider_error(exc: Exception) -> None:
+    if isinstance(exc, EndpointError):
+        raise AppError(exc.code, exc.message, 400) from exc
+    if isinstance(exc, llm.RateLimitError):
+        raise AppError("provider_rate_limited", str(exc), 429) from exc
+    if isinstance(exc, llm.LLMError):
+        raise AppError("provider_unreachable", str(exc), 400) from exc
+    if isinstance(exc, ValueError):
+        raise AppError("invalid_model", str(exc), 400) from exc
+    raise AppError("invalid_model", str(exc), 400) from exc
+
+
+@app.post("/api/session/{session_id}/provider/test")
+def test_provider(session_id: str, body: ProbeBody) -> dict[str, object]:
+    _require(session_id)
+    try:
+        inspected = llm.probe(body.url, body.key, body.model)
+    except Exception as e:
+        _raise_provider_error(e)
+    return {"ok": True, "host": inspected.host, "model": body.model}
+
+
+@app.post("/api/session/{session_id}/provider")
+def set_provider(session_id: str, body: ProviderBody) -> dict[str, object]:
+    session = _require(session_id)
+    lock = store.lock_for(session_id)
+    if lock is None:
+        raise AppError("session_not_found", f"no session {session_id}", 404)
+    with lock:
+        try:
+            pin = llm.apply_session_provider(
+                session, body.provider, body.model, url=body.url, key=body.key
+            )
+        except Exception as e:
+            _raise_provider_error(e)
+    log.info(
+        "session provider: session=%s provider=%s model=%s host=%s",
+        session_id,
+        pin.preset_id or pin.provider,
+        pin.model,
+        pin.host,
+    )
+    return llm.catalog(session)
+
+
 @app.post("/api/session/{session_id}/settle")
 def settle(session_id: str, body: SettleBody) -> dict[str, dict[str, str]]:
     session = _require(session_id)
@@ -231,6 +364,12 @@ def settle(session_id: str, body: SettleBody) -> dict[str, dict[str, str]]:
 def schema(session_id: str) -> list[dict[str, object]]:
     session = _require(session_id)
     return [t.model_dump() for t in session.tables]
+
+
+@app.get("/api/session/{session_id}/suggestions")
+def session_suggestions(session_id: str) -> dict[str, list[str]]:
+    session = _require(session_id)
+    return {"suggestions": suggestions.suggest_questions(session.tables)}
 
 
 @app.get("/api/session/{session_id}/audit")

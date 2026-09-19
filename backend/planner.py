@@ -25,7 +25,7 @@ refuse — cannot be answered from these columns at all: causal questions ("why 
 
 chat — not about the data: greeting, thanks, what you are or can do, small talk. Put a short warm reply in reply, one or two sentences. If the user is orienting themselves, name two or three questions they could ask about the columns in this schema, using real table and column names. Never invent data; never answer a data question here.
 
-chart — bar for category against measure, line for a time series, pie only for parts of a whole under 8 categories, scatter for two measures, none for a single value. chart_x and chart_y must be aliases the query returns.
+chart — bar for category against measure, line for a time series, pie only for parts of a whole under 8 categories, scatter for two measures, none for a single value. chart_x and chart_y must be aliases the query returns. When the user only asks to change the visualization ("as a bar chart", "chart this"), reuse the same SQL as the previous answer and set chart, chart_x, and chart_y from the query aliases.
 
 Prefer clarify over a confident guess. A wrong confident answer is the worst outcome."""
 
@@ -59,7 +59,14 @@ def _build_user_message(
     history: list[dict],
     force_answer: bool = False,
 ) -> str:
-    parts = [f"Schema:\n{schema_card}"] if schema_card else []
+    if schema_card:
+        parts = [f"Schema:\n{schema_card}"]
+    else:
+        parts = [
+            "No spreadsheet loaded yet. Route greetings and what-you-can-do "
+            "questions to chat. Route data questions to refuse and say a "
+            "sheet must be uploaded first."
+        ]
     if definitions:
         settled = "\n".join(f"- {term}: {meaning}" for term, meaning in definitions.items())
         parts.append(f"Settled definitions (apply these, do not ask again):\n{settled}")
@@ -84,6 +91,11 @@ def _parse_plan(raw: str) -> Plan:
         text = text.split("```")[1]
         if text.lstrip().startswith("json"):
             text = text.lstrip()[4:]
+    # gpt-oss harmony output sometimes prefixes safety or analysis lines.
+    if "{" not in text:
+        raise ValueError(f"no JSON object in model output: {raw[:200]}")
+    if not text.lstrip().startswith("{"):
+        text = text[text.find("{") :]
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError(f"no JSON object in model output: {raw[:200]}")
@@ -101,6 +113,13 @@ def _parse_plan(raw: str) -> Plan:
 
 def _refuse(reason: str, guard_code: str | None = None) -> Plan:
     return Plan(route="refuse", refuse_reason=reason, guard_code=guard_code)
+
+
+def _unreadable_plan_reason() -> str:
+    return (
+        "The model returned a response plumb could not read. "
+        "Try again, rephrase the question, or pick a different model."
+    )
 
 
 def _repair_clarify_term(plan: Plan, question: str) -> Plan:
@@ -128,8 +147,9 @@ def plan(
     """Ask the model for a route. When `schema` is given, SQL is guard-checked
     here and one repair attempt is made before falling back to refuse.
 
-    `RateLimitError` is deliberately not caught: a busy provider never told us
-    anything about the data, so turning it into a refusal would be a lie.
+    `RateLimitError` and `ProviderUnavailableError` are deliberately not
+    caught: a busy or vanished model never told us anything about the data,
+    so turning either into a refusal would be a lie.
     """
     user = _build_user_message(
         question, schema_card, definitions, history, force_answer=force_answer
@@ -137,11 +157,22 @@ def plan(
     try:
         raw = llm.complete(SYSTEM_PROMPT, user, json_mode=True)
         current = _parse_plan(raw)
-    except llm.RateLimitError:
+    except (llm.RateLimitError, llm.ProviderUnavailableError):
         raise
     except (llm.LLMError, ValueError, json.JSONDecodeError, ValidationError) as e:
         log.warning("planner attempt 1 unusable: %s", e)
-        return _refuse(f"The model did not return a usable plan: {e}")
+        try:
+            raw = llm.complete(
+                SYSTEM_PROMPT,
+                user + "\n\nReturn one JSON object only. No prose.",
+                json_mode=True,
+            )
+            current = _parse_plan(raw)
+        except (llm.RateLimitError, llm.ProviderUnavailableError):
+            raise
+        except (llm.LLMError, ValueError, json.JSONDecodeError, ValidationError) as retry:
+            log.warning("planner attempt 2 unusable: %s", retry)
+            return _refuse(_unreadable_plan_reason())
 
     if current.route == "answer" and not current.sql:
         return _refuse("The model chose to answer but returned no SQL.")
@@ -166,7 +197,7 @@ def plan(
     )
     try:
         retry = _parse_plan(llm.complete(SYSTEM_PROMPT, repair, json_mode=True))
-    except llm.RateLimitError:
+    except (llm.RateLimitError, llm.ProviderUnavailableError):
         raise
     except (llm.LLMError, ValueError, json.JSONDecodeError, ValidationError) as e:
         log.warning("planner repair attempt unusable: %s", e)

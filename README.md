@@ -1,3 +1,14 @@
+---
+title: plumb
+emoji: 🔧
+colorFrom: gray
+colorTo: blue
+sdk: docker
+app_port: 8000
+pinned: false
+short_description: Ask a spreadsheet a question. See the SQL it ran.
+---
+
 # plumb
 
 Answers you can check.
@@ -39,7 +50,7 @@ Two of the original six failures were Groq 429s that the engine surfaces as `ref
 make eval
 ```
 
-Groq's `llama-3.3-70b-versatile` (the engine default) currently 404s on this key. Docker Compose sets `PLUMB_MODEL=openai/gpt-oss-20b` unless you override it.
+Groq withdrew `llama-3.3-70b-versatile` from the free plan on 16 August 2026 — the 404 was the model gone, not a broken key. The picker offers `openai/gpt-oss-20b` (8,000 TPM). A paid Groq key can still pin the 70B via `PLUMB_MODEL`.
 
 ## Red team
 
@@ -70,6 +81,20 @@ export PLUMB_MODEL=qwen2.5-coder:7b-instruct   # optional; this is the default
 ```
 
 Ollama must be listening on `http://localhost:11434`. No Groq key is required.
+
+## Bring your own endpoint
+
+Any OpenAI-compatible server works: vLLM, LM Studio, LiteLLM, an internal gateway.
+
+```bash
+export PLUMB_PROVIDER=custom
+export PLUMB_CUSTOM_URL=http://localhost:11434/v1/chat/completions
+export PLUMB_CUSTOM_MODEL=qwen2.5-coder:7b-instruct
+# PLUMB_CUSTOM_KEY=          # optional
+# PLUMB_ALLOW_PRIVATE_ENDPOINTS=1   # required for 10/8, 172.16/12, 192.168/16
+```
+
+The URL is untrusted input. plumb checks the scheme, resolves the host, pins that address, refuses redirects, and only allows ports 443, 80, 8000, 8080, 11434, and 1234 — the same discipline as the SQL guard. A key typed in the UI is held on the session, never in process-wide env, and never written to the audit log.
 
 ## Limitations
 

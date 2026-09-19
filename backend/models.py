@@ -45,6 +45,26 @@ class Plan(BaseModel):
     guard_code: str | None = None  # why the planner gave up, when it did
 
 
+class ChartAdvice(BaseModel):
+    """What the *result shape* says the chart should be, and why.
+
+    Separate from `Plan.chart`, which is what the model asked for. The model
+    reads a question; this reads the rows that came back — cardinality, dtype,
+    sign, row count — so the advice survives a model that picks a pie for
+    forty categories.
+    """
+
+    kind: Literal["bar", "line", "pie", "scatter", "none"]
+    x: str | None = None
+    y: str | None = None
+    reason: str = ""
+    alternatives: list[str] = []
+    # A shape plumb cannot draw (candlestick, heatmap). Named rather than
+    # silently ignored, so "no chart" never reads as "no chart was possible".
+    unsupported: str | None = None
+    rendered: str | None = None  # the chart actually drawn, when it differs
+
+
 class AskResponse(BaseModel):
     route: Literal["answer", "clarify", "refuse", "chat", "error"]
     sql: str | None = None
@@ -60,5 +80,10 @@ class AskResponse(BaseModel):
     error_code: str | None = None  # route == "error", e.g. provider_rate_limited
     error_message: str | None = None
     tables_sent: list[str] | None = None  # which tables the planner was shown
+    chart_advice: ChartAdvice | None = None
+    follow_ups: list[str] = []  # next questions, derived from this result
     definitions_applied: dict[str, str] = {}
     elapsed_ms: int
+    provider: str = ""
+    model: str = ""
+    endpoint_host: str | None = None

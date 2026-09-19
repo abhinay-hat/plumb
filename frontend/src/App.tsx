@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import { AnswerCard } from "./components/AnswerCard";
 import { AuditDrawer } from "./components/AuditDrawer";
@@ -10,9 +10,17 @@ import { ErrorCard } from "./components/ErrorCard";
 import { PendingCard } from "./components/PendingCard";
 import { RefuseCard } from "./components/RefuseCard";
 import { SchemaPanel } from "./components/SchemaPanel";
+import { SessionBar } from "./components/SessionBar";
+import { TurnExchange, type TurnRoute } from "./components/TurnExchange";
 import { UploadZone } from "./components/UploadZone";
 import type { AskResponse, AuditEntry, TableInfo } from "./types";
 import { ApiRequestError } from "./types";
+import {
+  clearWorkspace,
+  loadWorkspace,
+  type PersistedTurn,
+  saveWorkspace,
+} from "./workspace";
 
 interface UserTurn {
   id: string;
@@ -47,6 +55,19 @@ function nextId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function persistableTurns(turns: Turn[]): PersistedTurn[] {
+  return turns.filter((turn) => turn.kind !== "pending") as PersistedTurn[];
+}
+
+function turnRoute(turn: Exclude<Turn, UserTurn>): TurnRoute {
+  if (turn.kind === "pending") return "pending";
+  if (turn.kind === "error") return "error";
+  return turn.response.route;
+}
+
+/** Only prompts that make sense before a spreadsheet is loaded. */
+const CHAT_STARTERS = ["Hi", "What can you do?", "How does plumb work?"];
+
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -54,21 +75,103 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
-  const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  useEffect(() => {
+    api.bindSessionRefresh(async () => {
+      const result = await api.createSession();
+      setSessionId(result.session_id);
+      setTables([]);
+      setBootError(null);
+      return result.session_id;
+    });
+
+    async function boot() {
+      const saved = loadWorkspace();
+      if (saved?.turns.length) {
+        setTurns(saved.turns);
+      }
+      if (saved?.sessionId) {
+        try {
+          const schema = await api.schema(saved.sessionId);
+          setSessionId(saved.sessionId);
+          setTables(schema);
+          setBootError(null);
+          return;
+        } catch {
+          // Server restarted or session evicted — keep turns, mint a new session.
+        }
+      }
+      try {
+        const result = await api.createSession();
+        setSessionId(result.session_id);
+        setBootError(null);
+      } catch (err) {
+        const message = err instanceof ApiRequestError ? err.message : String(err);
+        setBootError(message);
+      }
+    }
+
+    void boot();
+    return () => api.bindSessionRefresh(null);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId && turns.length === 0 && tables.length === 0) return;
+    saveWorkspace({
+      sessionId,
+      tables,
+      turns: persistableTurns(turns),
+    });
+  }, [sessionId, tables, turns]);
+
+  useEffect(() => {
+    if (!sessionId || tables.length === 0) {
+      setSuggestions([]);
+      return;
+    }
+    void api
+      .sessionSuggestions(sessionId)
+      .then((body) => setSuggestions(body.suggestions))
+      .catch(() => setSuggestions([]));
+  }, [sessionId, tables]);
 
   const pending = useMemo(
     () => turns.some((t) => t.kind === "pending"),
     [turns],
   );
 
-  const refreshAudit = useCallback(async (id: string) => {
+  async function startNewSession() {
+    if (busy || pending) return;
     try {
-      setAudit(await api.auditLog(id));
+      const result = await api.createSession();
+      setSessionId(result.session_id);
+      setTables([]);
+      setSuggestions([]);
+      setTurns([]);
+      setUploadError(null);
+      setAuditOpen(false);
+      setAuditEntries([]);
+      clearWorkspace();
     } catch (err) {
-      console.error(err);
+      const message = err instanceof ApiRequestError ? err.message : String(err);
+      setBootError(message);
     }
-  }, []);
+  }
+
+  async function openAudit() {
+    if (!sessionId) return;
+    try {
+      setAuditEntries(await api.auditLog(sessionId));
+      setAuditOpen(true);
+    } catch (err) {
+      const message = err instanceof ApiRequestError ? err.message : String(err);
+      setBootError(message);
+    }
+  }
 
   async function onFiles(files: File[]) {
     setUploading(true);
@@ -77,8 +180,7 @@ export default function App() {
       const result = await api.upload(files);
       setSessionId(result.session_id);
       setTables(result.tables);
-      setTurns([]);
-      setAudit([]);
+      setSuggestions(result.suggestions);
     } catch (err) {
       const message = err instanceof ApiRequestError ? err.message : String(err);
       setUploadError(message);
@@ -106,7 +208,6 @@ export default function App() {
             : turn,
         ),
       );
-      await refreshAudit(sessionId);
     } catch (err) {
       const message = err instanceof ApiRequestError ? err.message : String(err);
       setTurns((prev) =>
@@ -121,9 +222,6 @@ export default function App() {
     }
   }
 
-  // The planner names the term it clarified. The frontend never guesses:
-  // a guessed key files the definition where the planner will never look,
-  // and the same clarify card comes back forever.
   async function onClarify(turn: ModelTurn, definition: string) {
     if (!sessionId) return;
     const term = turn.response.clarify_term ?? turn.question;
@@ -140,18 +238,19 @@ export default function App() {
     await runAsk(turn.question);
   }
 
-  const tableLabel = sessionId
-    ? `${tables.length} table${tables.length === 1 ? "" : "s"}`
-    : "no file";
+  const tableLabel =
+    tables.length === 0
+      ? "no file"
+      : `${tables.length} table${tables.length === 1 ? "" : "s"}`;
 
   return (
     <div className="flex h-svh min-h-0 w-full overflow-hidden bg-channel max-lg:flex-col">
-      <aside className="flex w-[272px] shrink-0 flex-col bg-chassis max-lg:w-full max-lg:max-h-[30vh] max-lg:border-b max-lg:border-line">
-        <div className="border-b border-line px-4 py-4">
-          <p className="font-sans text-[22px] font-semibold leading-none tracking-tight text-ink">
+      <aside className="flex w-[min(100%,20rem)] shrink-0 flex-col overflow-x-hidden bg-chassis max-lg:w-full max-lg:max-h-[30vh] max-lg:border-b max-lg:border-line">
+        <div className="flex h-14 shrink-0 flex-col justify-center border-b border-line px-4">
+          <p className="font-sans text-[20px] font-semibold leading-none tracking-tight text-ink">
             plumb
           </p>
-          <p className="mt-1.5 font-mono text-[11px] text-muted">
+          <p className="mt-1 font-mono text-[11px] text-muted">
             answers you can check
           </p>
         </div>
@@ -173,87 +272,76 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="w-2 shrink-0 bg-channel max-lg:hidden" aria-hidden />
+      <div className="w-[8px] shrink-0 bg-channel max-lg:hidden" aria-hidden />
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-line bg-chassis px-5">
-          <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
-            {tableLabel}
-          </p>
-          <button
-            type="button"
-            disabled={!sessionId}
-            aria-expanded={auditOpen}
-            onClick={() => {
-              setAuditOpen(true);
-              if (sessionId) void refreshAudit(sessionId);
-            }}
-            className="stamp text-ink hover:text-answer disabled:text-muted"
-          >
-            Audit
-          </button>
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line bg-chassis px-3 py-2 sm:min-h-14 sm:px-5 sm:py-0">
+          <p className="min-w-0 shrink-0 stamp text-muted">{tableLabel}</p>
+          <SessionBar
+            sessionId={sessionId}
+            busy={busy || pending}
+            disabled={busy || pending}
+            onAudit={() => void openAudit()}
+            onNewSession={() => void startNewSession()}
+          />
         </header>
 
         <div className="chart-bed min-h-0 flex-1 overflow-y-auto px-5 py-6">
-          {!sessionId ? (
-            <EmptyState />
+          {bootError ? (
+            <p className="font-mono text-[12px] text-clarify">{bootError}</p>
+          ) : !sessionId ? (
+            <EmptyState examples={[]} />
           ) : turns.length === 0 ? (
-            <EmptyState onExample={(q) => void runAsk(q)} />
+            <EmptyState
+              preUpload={tables.length === 0}
+              examples={tables.length === 0 ? CHAT_STARTERS : suggestions}
+              onExample={(q) => void runAsk(q)}
+            />
           ) : (
-            <div className="mx-auto flex max-w-3xl flex-col gap-5">
+            <div className="mx-auto flex max-w-3xl flex-col gap-6">
               {turns.map((turn) => {
-                if (turn.kind === "user") {
-                  return (
-                    <p
-                      key={turn.id}
-                      className="flex gap-3 font-mono text-[12px] leading-5 text-muted"
-                    >
-                      <span className="shrink-0 uppercase tracking-[0.14em]">Q</span>
-                      <span className="font-sans text-[14px] text-ink">{turn.question}</span>
-                    </p>
-                  );
-                }
-                if (turn.kind === "pending") {
-                  return <PendingCard key={turn.id} started={turn.started} />;
-                }
-                if (turn.kind === "error") {
-                  return (
+                if (turn.kind === "user") return null;
+
+                const body =
+                  turn.kind === "pending" ? (
+                    <PendingCard started={turn.started} />
+                  ) : turn.kind === "error" ? (
                     <ErrorCard
-                      key={turn.id}
                       message={turn.message}
                       onRetry={() => void runAsk(turn.question)}
                     />
-                  );
-                }
-                if (turn.response.route === "clarify") {
-                  return (
+                  ) : turn.response.route === "clarify" ? (
                     <ClarifyCard
-                      key={turn.id}
                       response={turn.response}
                       busy={busy}
                       onChoose={(definition) => void onClarify(turn, definition)}
                     />
-                  );
-                }
-                if (turn.response.route === "refuse") {
-                  return <RefuseCard key={turn.id} response={turn.response} />;
-                }
-                if (turn.response.route === "chat") {
-                  return <ChatCard key={turn.id} response={turn.response} />;
-                }
-                if (turn.response.route === "error") {
-                  return (
+                  ) : turn.response.route === "refuse" ? (
+                    <RefuseCard response={turn.response} />
+                  ) : turn.response.route === "chat" ? (
+                    <ChatCard response={turn.response} />
+                  ) : turn.response.route === "error" ? (
                     <ErrorCard
-                      key={turn.id}
                       message={
                         turn.response.error_message ??
                         "Something went wrong before the question was answered."
                       }
                       onRetry={() => void runAsk(turn.question)}
                     />
+                  ) : (
+                    <AnswerCard
+                      response={turn.response}
+                      onAsk={(question) => {
+                        void runAsk(question);
+                      }}
+                    />
                   );
-                }
-                return <AnswerCard key={turn.id} response={turn.response} />;
+
+                return (
+                  <TurnExchange key={turn.id} question={turn.question} route={turnRoute(turn)}>
+                    {body}
+                  </TurnExchange>
+                );
               })}
             </div>
           )}
@@ -261,11 +349,16 @@ export default function App() {
 
         <Composer
           disabled={!sessionId || busy || pending}
+          placeholder={tables.length === 0 ? "Say hi or ask anything" : "Ask this sheet"}
           onSubmit={(q) => void runAsk(q)}
         />
       </main>
 
-      <AuditDrawer open={auditOpen} entries={audit} onClose={() => setAuditOpen(false)} />
+      <AuditDrawer
+        open={auditOpen}
+        entries={auditEntries}
+        onClose={() => setAuditOpen(false)}
+      />
     </div>
   );
 }

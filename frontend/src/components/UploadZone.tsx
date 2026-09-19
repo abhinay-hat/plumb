@@ -19,7 +19,7 @@ export function UploadZone({ disabled, onFiles }: Props) {
     <label
       className={[
         "block cursor-pointer border px-3 py-5 text-center transition-colors",
-        over ? "border-clarify bg-ticket" : "border-line bg-panel",
+        over ? "border-ink bg-ticket" : "border-line bg-panel focus-within:border-ink",
         disabled ? "pointer-events-none opacity-50" : "",
       ].join(" ")}
       onDragOver={(e) => {

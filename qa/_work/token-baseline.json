@@ -1,0 +1,13 @@
+{
+  "fixture": "northwind_hr_analytics.xlsx",
+  "tables": 8,
+  "card_chars": 6310,
+  "card_lines": 146,
+  "schema card": 1577,
+  "  table names": 224,
+  "  column comments": 842,
+  "system prompt": 701,
+  "history": 50,
+  "question + defs": 58,
+  "total input": 2386
+}

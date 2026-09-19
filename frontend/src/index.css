@@ -46,9 +46,30 @@ body {
   outline-offset: 2px;
 }
 
+button,
+input,
+select,
+textarea,
+summary {
+  border-radius: 0;
+}
+
 input,
 textarea {
   caret-color: var(--color-clarify);
+}
+
+::placeholder {
+  color: var(--color-muted);
+  opacity: 1;
+}
+
+summary {
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
 }
 
 ::-webkit-scrollbar {
@@ -97,6 +118,136 @@ textarea {
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.turn-question {
+  border: 1px solid var(--color-line);
+  border-left: 4px solid var(--color-ink);
+  background: var(--color-panel);
+  padding: 14px 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.turn-response {
+  border: 1px solid var(--color-line);
+  box-shadow: 0 2px 0 rgba(21, 32, 40, 0.05);
+}
+
+.session-toolbar {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.session-toolbar__actions {
+  display: flex;
+  shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.model-picker {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+}
+
+.model-picker__controls {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  height: 2rem;
+  align-items: stretch;
+  border: 1px solid var(--color-line);
+  background: var(--color-ticket);
+}
+
+.model-picker__controls:hover:not(.is-disabled) {
+  border-color: var(--color-ink);
+}
+
+.model-picker__controls.is-disabled {
+  opacity: 0.5;
+}
+
+.model-picker__field {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.5rem;
+}
+
+.model-picker__field + .model-picker__field {
+  border-left: 1px solid var(--color-line);
+}
+
+.model-picker__field select {
+  min-width: 0;
+  max-width: 9rem;
+}
+
+@media (min-width: 640px) {
+  .model-picker__field select.model-picker__model {
+    max-width: 11rem;
+  }
+}
+
+.schema-panel,
+.schema-table,
+.schema-table-head,
+.schema-column {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.schema-table-head span,
+.schema-column span,
+.schema-column p {
+  overflow-wrap: anywhere;
+}
+
+.dial {
+  appearance: none;
+  max-width: 100%;
+  border: 0;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path fill='%23152028' d='M0 0h8L4 5z'/></svg>");
+  background-position: right 0 center;
+  background-repeat: no-repeat;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 0 14px 0 0;
+}
+
+.dial:disabled {
+  color: var(--color-refuse);
+}
+
+.dial:focus {
+  outline: none;
+}
+
+.picker-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  width: 22rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-ticket);
+  padding: 12px;
+  box-shadow: 0 8px 0 rgba(21, 32, 40, 0.08);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any
 
-AUDIT_DIR = Path(__file__).resolve().parents[1] / "audit"
+# The repo checkout is writable in dev and on a single container; a host that
+# mounts a volume elsewhere points PLUMB_AUDIT_DIR at it. This is the only
+# path plumb writes to, so it is the only one that needs to move.
+AUDIT_DIR = Path(
+    os.environ.get("PLUMB_AUDIT_DIR") or Path(__file__).resolve().parents[1] / "audit"
+)
 _LOCK = threading.Lock()
 
 

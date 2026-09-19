@@ -74,6 +74,19 @@ def test_rate_limit_is_an_error_not_a_refusal(session, monkeypatch) -> None:
     assert response.refuse_reason is None
 
 
+def test_unavailable_model_is_an_error_not_a_refusal(session, monkeypatch) -> None:
+    def boom(*_args, **_kwargs):
+        raise llm.ProviderUnavailableError("qwen/qwen3.8-27b:free is unavailable")
+
+    monkeypatch.setattr(pipeline, "make_plan", boom)
+
+    response = pipeline.ask("what's our headcount?", session)
+    assert response.route == "error"
+    assert response.error_code == "provider_unavailable"
+    assert "pick another model" in (response.error_message or "").lower()
+    assert response.refuse_reason is None
+
+
 def test_a_long_quota_wait_is_stated_not_softened(session, monkeypatch) -> None:
     def boom(*_args, **_kwargs):
         raise llm.RateLimitError("daily quota", retry_after=631.0)
@@ -194,6 +207,27 @@ def test_greeting_routes_to_chat_with_no_sql(session, monkeypatch) -> None:
     assert response.sql is None
     assert response.chart is None
     assert response.rows is None
+
+
+def test_chart_follow_up_infers_bar_when_plan_leaves_chart_none(
+    session, monkeypatch
+) -> None:
+    sql = (
+        'SELECT "department", COUNT(*) AS "headcount" '
+        'FROM employees GROUP BY "department" LIMIT 1000'
+    )
+    group = Plan(route="answer", sql=sql, chart="none")
+    _stub(monkeypatch, [group, group])
+
+    first = pipeline.ask("How many employees in each department?", session)
+    assert first.route == "answer"
+    assert first.chart is None
+
+    second = pipeline.ask("can you give me in bar chart", session)
+    assert second.route == "answer"
+    assert second.chart is not None
+    mark = second.chart.get("mark")
+    assert (mark.get("type") if isinstance(mark, dict) else mark) == "bar"
 
 
 def test_a_data_question_is_not_answered_through_chat(session, monkeypatch) -> None:

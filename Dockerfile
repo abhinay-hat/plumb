@@ -12,5 +12,15 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend ./backend
 COPY --from=frontend /src/dist ./frontend/dist
+
+# Hugging Face Spaces runs the container as uid 1000, so the audit log — the
+# only thing plumb writes — has to be owned by that user before the drop.
+RUN useradd --uid 1000 --create-home plumb \
+    && mkdir -p /app/audit \
+    && chown -R plumb:plumb /app
+USER plumb
+
+# Spaces injects PORT; 8000 keeps `docker compose up` and the README identical.
+ENV PORT=8000
 EXPOSE 8000
-CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-8000}"]

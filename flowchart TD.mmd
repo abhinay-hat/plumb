@@ -1,0 +1,17 @@
+flowchart TD
+    Q(["Question"]) --> G1{"Answerable from<br/>these columns?"}
+    G1 -->|No| R["REFUSE"]
+    G1 -->|Yes| G2{"Every term defined<br/>by the data?"}
+    G2 -->|No| C["CLARIFY<br/>definition pinned for the session"]
+    C --> Q
+    G2 -->|Yes| S["Model proposes SQL"]
+    S --> G3{"Guard: parses, resolves,<br/>read-only?"}
+    G3 -->|No| R
+    G3 -->|Yes| E["Execute on DuckDB"]
+    E --> G4{"Every number in the<br/>sentence in the rows?"}
+    G4 -->|No| F["Deterministic fallback"]
+    G4 -->|Yes| A(["ANSWER<br/>sentence · table · chart · SQL"])
+    F --> A
+
+    classDef g fill:#e4e7f5,stroke:#3d4a8c,stroke-width:2px,color:#191c1f
+    class G1,G2,G3,G4 g

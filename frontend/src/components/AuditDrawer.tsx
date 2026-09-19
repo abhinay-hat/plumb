@@ -45,8 +45,14 @@ export function AuditDrawer({ open, entries, onClose }: Props) {
               <section key={`${entry.ts}-${i}`} className="border-b border-line bg-ticket/80 px-4 py-3">
                 <p className="text-[13px] text-ink">{entry.question}</p>
                 <p className="mt-1 font-mono text-[11px] text-muted">
-                  {entry.route} · {entry.elapsed_ms} ms
+                  {entry.route}
+                  {entry.row_count > 0 ? ` · ${entry.row_count} rows` : ""} · {entry.elapsed_ms}{" "}
+                  ms · {entry.provider}
+                  {entry.model ? ` · ${entry.model}` : ""}
                 </p>
+                {entry.error_code ? (
+                  <p className="mt-1 font-mono text-[11px] text-clarify">{entry.error_code}</p>
+                ) : null}
                 {entry.sql ? (
                   <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-4 text-muted">
                     {entry.sql}

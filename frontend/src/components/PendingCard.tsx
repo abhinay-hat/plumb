@@ -15,12 +15,12 @@ export function PendingCard({ started }: Props) {
   }, [started]);
 
   return (
-    <article className="border border-line bg-ticket px-4 py-4">
-      <div className="flex items-center justify-between">
+    <article className="border-0 bg-transparent">
+      <header className="flex items-center justify-between border-b border-line px-4 py-2">
         <span className="stamp text-muted">Recording</span>
         <span className="font-mono text-[11px] tabular-nums text-ink">{seconds}s</span>
-      </div>
-      <div className="mt-5">
+      </header>
+      <div className="px-4 py-5">
         <div className="pen-trace" />
       </div>
     </article>

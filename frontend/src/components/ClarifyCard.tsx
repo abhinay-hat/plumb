@@ -12,7 +12,7 @@ export function ClarifyCard({ response, busy, onChoose }: Props) {
   const options = response.clarify_options ?? [];
 
   return (
-    <article className="bg-clarify text-ticket">
+    <article className="bg-transparent text-ticket">
       <header className="flex items-center justify-between px-4 py-2">
         <span className="stamp text-ticket">Method</span>
         <span className="font-mono text-[10px] tabular-nums text-ticket/80">
@@ -53,7 +53,7 @@ export function ClarifyCard({ response, busy, onChoose }: Props) {
           onChange={(e) => setFree(e.target.value)}
           disabled={busy}
           placeholder="Or write the definition yourself"
-          className="min-w-0 flex-1 border border-ticket/40 bg-clarify px-3 py-2 text-[13px] text-ticket caret-ticket outline-none placeholder:text-ticket focus:border-ticket"
+          className="min-w-0 flex-1 border border-ticket/40 bg-clarify px-3 py-2 text-[13px] text-ticket caret-ticket outline-none placeholder:text-ticket/70 focus:border-ticket"
         />
         <button
           type="submit"
