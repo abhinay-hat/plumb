@@ -40,8 +40,10 @@ Upload a sheet, inspect the inferred schema, ask in the composer, read a card. A
 
 ## Evidence on Hand
 
-- Fixtures: `fixtures/employees.csv`, `fixtures/departments.csv`
-- Eval: 22/28 (79%) on 19 Sep 2026 (`evals/results.md`)
+- Fixtures: `fixtures/employees.csv`, `fixtures/departments.csv`,
+  `fixtures/northwind_hr_analytics.xlsx` (8 sheets, 11,806 rows)
+- Eval: 23/28 (82%) on 19 Sep 2026 (`evals/results.md`)
+- Red team: three Criticals found and closed, 19 Sep 2026 (`qa/RED-TEAM.md`)
 - No logo, photography, or customer quotes. Do not fabricate them.
 
 ## Product Principles
