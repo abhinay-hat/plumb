@@ -18,9 +18,12 @@ Locally, without Docker:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+make setup
 make build
 make dev
 ```
+
+`make setup` points git at `.githooks/` — once per clone.
 
 `make dev` starts the API on :8000 and Vite on :5173.
 

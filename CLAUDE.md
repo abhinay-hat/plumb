@@ -15,6 +15,7 @@ rationale, `PRODUCT.md` the product framing.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
+make setup         # git config core.hooksPath .githooks — once per clone
 make build          # frontend/dist — the API serves this as the SPA at :8000
 make dev            # uvicorn :8000 + vite :5173 concurrently
 make test           # pytest -q
@@ -117,7 +118,7 @@ changing `AskResponse` means changing both. Picking a clarify option calls
   `Claude-Session:` trailers. GitHub writes those into a contributor-index row that a
   history rewrite does *not* retract — the repo had to be deleted and recreated twice to
   clear `cursoragent` from the sidebar. `core.hooksPath` is local config, so a fresh clone
-  needs `git config core.hooksPath .githooks` once.
+  needs `make setup` once before the hook does anything.
 
 ## Not committed
 
