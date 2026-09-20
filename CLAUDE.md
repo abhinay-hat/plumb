@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Ask a spreadsheet a question in English. plumb answers with the SQL it ran, asks what an
 ambiguous business term means, or says the columns cannot support the question. It never
 guesses. `README.md` states the user-facing contract, `DESIGN.md` the engineering
-rationale, `PRODUCT.md` the product framing.
+rationale, `FLOW.md` the decision flow as diagrams.
 
 ## Commands
 

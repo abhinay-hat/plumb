@@ -103,5 +103,5 @@ The URL is untrusted input. plumb checks the scheme, resolves the host, pins tha
 - Business definitions (`active`, `top performer`) last for one session. There is no metric layer.
 - Routing is the model's. `headcount` is sometimes answered as `count(*)` instead of being clarified; some prediction questions come back as clarify instead of refuse.
 - Spreadsheet typing is heuristic. Mixed columns become VARCHAR; dates convert only when >90% of values parse.
-- No authentication. Anyone who can reach the process can query the loaded sheet.
+- No authentication. Anyone who can reach the process can query the loaded sheet. `PLUMB_RATE_LIMIT_PER_MIN` caps requests per client on a public deploy; uploads are capped by `PLUMB_MAX_UPLOAD_MB` (32 MB) and `PLUMB_MAX_FILES` (10).
 - Groq's free token budget will turn a question into `refuse` if the planner call is rate-limited.

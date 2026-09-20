@@ -20,7 +20,7 @@ from starlette.requests import Request
 
 import duckdb
 
-from backend import audit, catalog, guard, llm, narrate, pipeline, suggestions
+from backend import audit, catalog, guard, llm, narrate, pipeline, ratelimit, suggestions
 from backend.endpoint_guard import EndpointError
 from backend.models import AskResponse
 from backend.pipeline import Session
@@ -125,6 +125,17 @@ app.add_middleware(
 )
 
 
+def _enforce_limit(request: Request, group: str) -> None:
+    """Refuse before any work is done — the point is to spend nothing."""
+    wait = ratelimit.limiter.check(f"{group}:{ratelimit.client_key(request)}")
+    if wait is not None:
+        raise AppError(
+            "rate_limited",
+            f"too many requests; try again in {max(1, round(wait))}s",
+            429,
+        )
+
+
 def _require(session_id: str) -> Session:
     session = store.get(session_id)
     if session is None:
@@ -132,7 +143,21 @@ def _require(session_id: str) -> Session:
     return session
 
 
-def _save_upload(upload: UploadFile) -> str:
+def _max_upload_bytes() -> int:
+    return int(os.environ.get("PLUMB_MAX_UPLOAD_MB", "32")) * 1024 * 1024
+
+
+def _max_files() -> int:
+    return int(os.environ.get("PLUMB_MAX_FILES", "10"))
+
+
+def _save_upload(upload: UploadFile, budget: int) -> tuple[str, int]:
+    """Stream one upload to disk, stopping the moment it exceeds `budget`.
+
+    Checking the size after writing is not a limit — by then the disk is
+    already full. This process shares a host with other services, so the write
+    is abandoned mid-stream and the partial file removed.
+    """
     name = upload.filename or "upload.csv"
     suffix = Path(name).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
@@ -143,13 +168,26 @@ def _save_upload(upload: UploadFile) -> str:
         )
     folder = Path(tempfile.mkdtemp(prefix="plumb_"))
     dest = folder / Path(name).name
-    with dest.open("wb") as fh:
-        while True:
-            chunk = upload.file.read(1024 * 1024)
-            if not chunk:
-                break
-            fh.write(chunk)
-    return str(dest)
+    written = 0
+    try:
+        with dest.open("wb") as fh:
+            while True:
+                chunk = upload.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > budget:
+                    raise AppError(
+                        "upload_too_large",
+                        f"uploads are limited to "
+                        f"{_max_upload_bytes() // (1024 * 1024)} MB in total",
+                        413,
+                    )
+                fh.write(chunk)
+    except AppError:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    return str(dest), written
 
 
 def _provider() -> str:
@@ -256,19 +294,32 @@ def create_session() -> dict[str, str]:
 
 @app.post("/api/upload")
 async def upload(
+    request: Request,
     file: UploadFile | None = File(default=None),
     files: list[UploadFile] | None = File(default=None),
 ) -> dict[str, object]:
+    _enforce_limit(request, "upload")
     uploads = list(files or [])
     if file is not None:
         uploads.append(file)
     if not uploads:
         raise AppError("no_file", "attach a CSV, TSV, or XLSX file", 400)
+    if len(uploads) > _max_files():
+        raise AppError(
+            "too_many_files",
+            f"attach at most {_max_files()} files in one upload",
+            400,
+        )
 
     saved: list[str] = []
     try:
+        # The budget is shared across the request: ten files just under the
+        # per-file cap would otherwise be ten times the intended limit.
+        remaining = _max_upload_bytes()
         for item in uploads:
-            saved.append(_save_upload(item))
+            path, written = _save_upload(item, remaining)
+            remaining -= written
+            saved.append(path)
         try:
             con, tables = catalog.ingest_many(saved, "upload")
         except ValueError as e:
@@ -292,7 +343,8 @@ async def upload(
 
 
 @app.post("/api/ask")
-def ask(body: AskBody) -> AskResponse:
+def ask(request: Request, body: AskBody) -> AskResponse:
+    _enforce_limit(request, "ask")
     session = _require(body.session_id)
     question = body.question.strip()
     lock = store.lock_for(body.session_id)
