@@ -192,12 +192,54 @@ def _columns_in(tables: list[TableInfo]) -> dict[str, tuple[TableInfo, ColumnInf
     return found
 
 
+def _asked_key(question: str) -> str:
+    return " ".join(question.lower().split()).rstrip("?.").strip()
+
+
+# Words that carry no subject. Two questions that differ only in these are the
+# same question asked twice.
+_FILLER = frozenset(
+    {
+        "a", "an", "and", "are", "by", "can", "do", "does", "for", "from", "give",
+        "how", "in", "is", "it", "many", "me", "much", "of", "on", "our", "s",
+        "show", "that", "the", "to", "us", "was", "were", "what", "whats",
+        "which", "who", "with", "you",
+    }
+)
+
+
+def _subject(question: str) -> set[str]:
+    return {
+        word
+        for word in re.split(r"[^a-z0-9]+", question.lower())
+        if word and word not in _FILLER
+    }
+
+
+def _adds_nothing(question: str, asked: list[str], known_tables: set[str]) -> bool:
+    """Whether this suggestion is a question already asked, worded differently.
+
+    "What is the average salary?" and "What's the average salary in employees?"
+    are the same request; only the table name differs, and naming the table the
+    answer already came from is not a new question. Comparing subject words
+    catches that where comparing strings does not.
+    """
+    subject = _subject(question) - known_tables
+    if not subject:
+        return True
+    for previous in asked:
+        if subject <= (_subject(previous) | known_tables):
+            return True
+    return False
+
+
 def follow_ups(
     columns: list[str],
     rows: list[list],
     tables: list[TableInfo],
     advice: ChartAdvice | None = None,
     rendered: str | None = None,
+    asked: list[str] | None = None,
     limit: int = 3,
 ) -> list[str]:
     """Next questions, built from the columns this answer actually returned.
@@ -206,9 +248,20 @@ def follow_ups(
     `suggest_questions`, applied to a result instead of a schema. Nothing here
     is a canned prompt: with no matching column, the list comes back short
     rather than padded.
+
+    `asked` is every question this session has already put to the sheet. A
+    "next" that repeats one of them is worse than no suggestion at all: an
+    aggregate alias like `average_tenure_days` matches no schema column, so
+    without this the fallback branch proposed the very question that produced
+    the result being looked at.
     """
     if not columns or not tables:
         return []
+    history = list(asked or [])
+    # The sheet's own names are not what makes a question new.
+    table_words: set[str] = set()
+    for table in tables:
+        table_words |= _subject(catalog.display_name(table))
 
     known = _columns_in(tables)
     answered = {col.lower() for col in columns}
@@ -276,11 +329,21 @@ def follow_ups(
     elif not out and used_metric:
         out.append(f"Who are the top {label} by {_human(used_metric)}?")
 
+    # A one-row aggregate names no schema column — `average_tenure_days` is an
+    # alias, not a header — so every branch above finds nothing. The useful
+    # next move on a single number is always the same shape: cut it by a real
+    # grouping column of the sheet it came from.
+    if len(rows) == 1 and len(columns) == 1:
+        group = _pick_group_column(source.columns, source.row_count)
+        if group:
+            measure = columns[0].replace("_", " ")
+            out.append(f"Show {measure} by {_human(group)}.")
+
     seen: set[str] = set()
     deduped: list[str] = []
     for question in out:
-        key = question.lower()
-        if key in seen:
+        key = _asked_key(question)
+        if key in seen or _adds_nothing(question, history, table_words):
             continue
         seen.add(key)
         deduped.append(question)

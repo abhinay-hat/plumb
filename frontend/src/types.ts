@@ -1,4 +1,4 @@
-export type Route = "answer" | "clarify" | "refuse" | "chat" | "error";
+export type Route = "answer" | "clarify" | "refuse" | "chat" | "error" | "dashboard";
 export type ChartKind = "bar" | "line" | "pie" | "scatter" | "none";
 
 export interface ColumnInfo {
@@ -18,6 +18,7 @@ export interface TableInfo {
   row_count: number;
   columns: ColumnInfo[];
   sheet_name: string | null;
+  source_file: string;
   display_name: string;
   grain_column: string | null;
   grain_entities: number | null;
@@ -37,6 +38,19 @@ export interface Plan {
   chart: ChartKind;
   chart_x: string | null;
   chart_y: string[] | null;
+  chart_spec: Record<string, unknown> | null;
+}
+
+export interface Panel {
+  title: string;
+  sql: string | null;
+  chart_spec: Record<string, unknown> | null;
+  columns: string[] | null;
+  rows: Cell[][] | null;
+  chart: Record<string, unknown> | null;
+  finding: string;
+  chart_advice: ChartAdvice | null;
+  error_code: string | null;
 }
 
 export interface ChartAdvice {
@@ -67,6 +81,8 @@ export interface AskResponse {
   error_message: string | null;
   tables_sent: string[] | null;
   chart_advice: ChartAdvice | null;
+  panels: Panel[] | null;
+  summary: string | null;
   follow_ups: string[];
   definitions_applied: Record<string, string>;
   elapsed_ms: number;
@@ -93,6 +109,8 @@ export interface AuditEntry {
   narration_verified: boolean;
   chart_kind: string | null;
   chart_rendered: boolean;
+  panel_count: number;
+  panel_sql: (string | null)[];
 }
 
 export interface UploadResult {

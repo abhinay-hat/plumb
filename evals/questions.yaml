@@ -121,3 +121,10 @@ questions:
 
   - question: Who should we promote?
     expected_route: refuse
+
+  # 2 dashboard
+  - question: Give me an overview of this data
+    expected_route: dashboard
+
+  - question: What is interesting in this spreadsheet?
+    expected_route: dashboard

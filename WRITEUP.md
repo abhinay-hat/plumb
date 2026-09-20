@@ -1,44 +1,41 @@
-# What I built
+# plumb — answers you can check
 
-plumb is a spreadsheet Q&A tool that treats ambiguity as a first-class outcome. You upload a CSV or XLSX, ask in English, and get one of three cards: an answer with SQL you can inspect, a clarification with named definitions, or a refusal that states what the columns cannot support.
+Upload one or more CSV/XLSX files, ask in English, get back the SQL that ran alongside the answer — or a question, or a refusal.
 
-## The three routes
+Live: **https://plumb.iamabhinay.com** · Local: `docker compose up --build`
 
-Every question is `answer`, `clarify`, or `refuse`. Clarify is not an error: “top performers”, “recent”, and “attrition” are business words the spreadsheet does not define, and guessing a filter is how these tools quietly lie. The UI makes that pause look deliberate — a brass-edged card, options you click, a definition that sticks for the rest of the session. Refuse is muted on purpose. “Why is attrition going up?” is causal; the sheet has status and dates, not causes.
+## Approach: ambiguity is an outcome, not an error
 
-## Why generated SQL is parsed and not trusted
+Five routes — `answer`, `clarify`, `refuse`, `chat`, `dashboard`. "Top performers" and "attrition" are business words the spreadsheet does not define, and quietly guessing a filter is how these tools lie; clarify asks, and the chosen definition sticks for the session. "Why is attrition going up?" is causal, and the sheet holds status and dates, not causes — so it refuses. A broad question returns a dashboard: four panels, each with its own SQL, chart, and finding, from a **single** planner call, because free tiers allow 30 requests a minute and N panels cannot mean N calls.
 
-DuckDB `SET access_mode=READ_ONLY` still allows `read_csv_auto('/etc/passwd')` and still writes files with `COPY ... TO`. A read-only connection is not a security boundary. plumb disables `enable_external_access` and walks the SQL AST: one statement, SELECT/UNION only, no COPY/INSERT/ATTACH, no `read_csv` / `glob` / scan functions, columns qualified against the loaded schema, LIMIT capped at 1,000. The model proposes SQL; the guard decides what runs.
+## Key decision: the model proposes, Python decides
 
-## I attacked it before anyone else could
+DuckDB's `access_mode=READ_ONLY` still allows `read_csv_auto('/etc/passwd')` and still writes files with `COPY ... TO`. A read-only connection is not a security boundary. plumb disables external access and walks the SQL AST: one statement, SELECT only, columns qualified against the loaded schema, rows capped.
 
-I generated an 11,806-row HR workbook — eight joinable sheets, 640 employees, compensation history, performance cycles, recruitment funnel — and planted five defects in it that produce *plausible* wrong answers rather than crashes. Then I red-teamed the app against ground truth computed independently in DuckDB.
+The same rule covers charts. Vega-Lite renders an invalid spec as a **blank chart rather than throwing**, so a hallucinated field name fails silently. The model authors the full spec — histogram, box plot, whatever fits — and `chart_guard` validates every field against the actual result columns before it reaches the browser, with one repair attempt and a deterministic fallback. Chart type is not a hardcoded list.
 
-It failed three.
+## What red-teaming changed
 
-- **“What's the average salary?”** returned ₹30,50,227 — the mean of 1,303 historical compensation rows, 2.04 per employee. It counted one person's four raises four times. Presented with no qualification.
-- **Hyderabad had 183 people.** It has 187. Four rows spell it `hyderabad`, and the group-by split the city in two.
-- **The average performance rating** was reported as 3.1935 with no mention that 52 of 1,300 values are null, so the figure covers 1,248 rows.
+I generated an 11,806-row HR workbook with planted defects that produce *plausible* wrong answers rather than crashes, and tested against ground truth computed independently.
 
-All three were one defect. The schema card told the model what the columns *were* — name, type, samples — and nothing about what shape the data was *in*. A salary history read as a salary list. Nothing was wrong with the model's reasoning; it answered correctly given what it was told, and it was not told enough.
+It failed three. "What's the average salary?" returned the mean of 1,303 historical compensation rows — 2.04 per employee — counting one person's four raises four times. Hyderabad showed 183 people instead of 187, because four rows spell it `hyderabad`. An average was reported without mentioning that 52 of 1,300 values were null.
 
-So the profiler now measures shape: grain (rows per entity), whether a table is a history table, case-folding collisions, and null coverage on every measure. The schema card carries those as warnings the model cannot miss, and the history warning is the one thing never dropped when the card is trimmed.
+All three were one defect: the schema card said what the columns *were*, not what shape the data was *in*. The model reasoned correctly from what it was told, and it was not told enough. The profiler now measures grain, history shape, case collisions, and null coverage, and the narration states coverage — "across 1,248 of 1,300 values". `avg()` skipping nulls is correct SQL; not saying so is a disclosure failure, and disclosure is the product.
 
-The third failure was not a wrong number. `avg()` excluding nulls is correct SQL. It was a *disclosure* failure — and disclosure is what this product sells, so the narration now states coverage: “across 1,248 of 1,300 values.”
+**The SQL is not the lie; the question the SQL answers is.**
 
-The red-team report's own line is the best summary of what this app is for: **the SQL is not the lie; the question the SQL answers is.**
+## What real use taught me
 
-## What the eval set says
+Every bug found in use was a *seam* bug — two modules each correct alone, disagreeing where they meet. Display names were resolved per file, so two uploads both containing `employees` collapsed onto whichever loaded last. A join on `e.name` and `d.name` produced duplicate column keys, and the chart plotted one while the table beside it showed both.
 
-28 questions on the two fixtures, recorded 19 September 2026, **23/28 (82%)**, no prompt tuning.
+220 passing single-module tests caught none of them. The answer was not more unit tests but invariants asserted across the whole pipeline: names are unique, every result column is addressable, what the advice claims and what the chart draws agree.
 
-It gets counts, group-bys, filters, a date window, a join to region, min/max, and most clarify/refuse cases right. `hired before 2021` now answers; two of the original six failures were Groq 429s rather than routing errors. It still gets these wrong:
+Separately: one provider is a single point of failure. Every configured free tier is now a candidate in a pool, a 429 marks it cooling using the provider's own `Retry-After`, and the turn moves on. The model roster is discovered from each provider's `/v1/models` — a hand-kept list is wrong the moment a model is retired, which is how `llama-3.3-70b-versatile` became a 404.
 
-- `Who are our top performers?` came back as refuse because Groq returned 429. That is the free-tier token budget, not a routing opinion.
-- `What share of employees are active?` answered with `0.866…` instead of a result the harness could match to 52 and 60. The SQL was a ratio, not a count pair.
-- `What's our headcount?` was specified as clarify (active? including leavers? budget vs actual?) and was answered as `count(*)` of active rows.
-- `Will we hit our hiring target?` and `Who should we promote?` were specified as refuse (prediction / recommendation) and came back as clarify. Preferring to ask rather than invent is the right instinct, but the eval wanted a hard no.
+## Eval
+
+30 questions, both fixtures, recorded 20 September 2026: **27/30 (90%)**, no prompt tuning against the set. The misses are routing disagreements, not wrong numbers — `What's our headcount?` was specified as clarify and answered as `count(*)`.
 
 ## What I'd build next
 
-A persistent governed metric layer so `active` and `attrition` outlive the tab. A hash-chained audit log with external anchoring for regulated deployments. A larger eval set in CI, with retries on provider 429 so rate limits do not look like refusals. And a clarify axis for grain: the first salary question after the profiler fix asked base vs total rather than current vs historical — it reached the right SQL, but that ambiguity should be a question of its own.
+A governed metric layer so `active` outlives the tab. A hash-chained audit log for regulated deployments. Property-based tests over generated result shapes, which would have caught the duplicate-column bug before a user did. And a clarify axis for grain: "current salary, or salary history?" deserves to be its own question.

@@ -494,6 +494,9 @@ def ingest(
         _convert_date_columns(con, table)
         info = _profile(con, table, originals)
         info.sheet_name = sheet
+        # Two uploads can both hold an `employees`; the filename is what tells
+        # a reader which one they are looking at.
+        info.source_file = path.name
         tables.append(info)
 
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
@@ -523,6 +526,12 @@ def ingest_many(
     FOREIGN_KEYS.update(_detect_foreign_keys(con, tables))
     for t in tables:
         _profile_grain(con, t)
+    # Names must be resolved across the whole upload, not per file. `ingest`
+    # only ever sees one file, so two uploads that each contain an `employees`
+    # both looked unambiguous alone and both shortened to `employees` — which
+    # `alias_map` then collapsed to whichever loaded last, silently pointing
+    # half the questions at the wrong table.
+    assign_display_names(tables)
     log_schema_cost(tables)
     return con, tables
 

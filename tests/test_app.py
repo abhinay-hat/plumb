@@ -59,7 +59,7 @@ def test_models_lists_the_providers() -> None:
     assert response.status_code == 200
     body = response.json()
     ids = [item["id"] for item in body["providers"]]
-    assert ids[:4] == ["groq", "openrouter", "ollama", "custom"]
+    assert ids[:5] == ["auto", "groq", "openrouter", "ollama", "custom"]
     assert body["provider"] in ids
     groq = next(item for item in body["providers"] if item["id"] == "groq")
     groq_ids = {row["id"] for row in groq["models"]}

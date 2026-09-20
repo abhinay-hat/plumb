@@ -36,6 +36,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, plans: list[Plan]) -> list[dict]:
         schema=None,
         force_answer=False,
         aliases=None,
+        **_kwargs,
     ):
         calls.append(
             {
@@ -226,8 +227,75 @@ def test_chart_follow_up_infers_bar_when_plan_leaves_chart_none(
     second = pipeline.ask("can you give me in bar chart", session)
     assert second.route == "answer"
     assert second.chart is not None
-    mark = second.chart.get("mark")
+    mark = second.chart["layer"][0].get("mark")
     assert (mark.get("type") if isinstance(mark, dict) else mark) == "bar"
+
+
+def test_valid_chart_spec_is_rendered(session, monkeypatch) -> None:
+    sql = (
+        'SELECT "department", COUNT(*) AS "headcount" '
+        'FROM employees GROUP BY "department" LIMIT 1000'
+    )
+    chart_spec = {
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "department", "type": "nominal"},
+            "y": {"field": "headcount", "type": "quantitative"},
+        },
+    }
+    _stub(
+        monkeypatch,
+        [Plan(route="answer", sql=sql, chart_spec=chart_spec)],
+    )
+
+    response = pipeline.ask("How many employees in each department?", session)
+
+    assert response.route == "answer"
+    assert response.chart is not None
+    assert response.chart["data"]["values"]
+    mark = response.chart.get("mark") or response.chart["layer"][0]["mark"]
+    rendered = mark.get("type") if isinstance(mark, dict) else mark
+    assert rendered == "bar"
+    assert response.chart_advice is not None
+    assert response.chart_advice.rendered == "bar"
+
+
+def test_invalid_chart_spec_falls_back_to_deterministic_builder(
+    session, monkeypatch
+) -> None:
+    sql = (
+        'SELECT "department", COUNT(*) AS "headcount" '
+        'FROM employees GROUP BY "department" LIMIT 1000'
+    )
+    bad = Plan(
+        route="answer",
+        sql=sql,
+        chart="bar",
+        chart_x="department",
+        chart_y=["headcount"],
+        chart_spec={
+            "mark": "bar",
+            "encoding": {
+                "x": {"field": "missing_column", "type": "nominal"},
+                "y": {"field": "headcount", "type": "quantitative"},
+            },
+        },
+    )
+    _stub(monkeypatch, [bad])
+
+    def drop_bad_spec(_question, plan, *_rest, **_kwargs):
+        return plan.model_copy(update={"chart_spec": None})
+
+    monkeypatch.setattr(pipeline, "repair_chart_spec", drop_bad_spec)
+
+    response = pipeline.ask("show headcount by department as a bar chart", session)
+
+    assert response.route == "answer"
+    assert response.chart is not None
+    mark = response.chart["layer"][0]["mark"]
+    assert mark["type"] == "bar"
+    assert response.chart_advice is not None
+    assert response.chart_advice.rendered == "bar"
 
 
 def test_a_data_question_is_not_answered_through_chat(session, monkeypatch) -> None:

@@ -103,3 +103,12 @@ def test_uneven_numeric_categories_stay_categories() -> None:
         ["store_code", "sales"], rows, {"store_code": "VARCHAR", "sales": "BIGINT"}
     )
     assert advice.kind in {"bar", "pie"}
+
+
+def test_a_blank_category_is_counted_like_any_other() -> None:
+    """It gets drawn as a `(blank)` bar, so the reason must count it too."""
+    rows = [["Sales", 11], ["HR", 12], [None, 4]]
+    advice = chart.recommend(
+        ["department", "headcount"], rows, {"department": "VARCHAR", "headcount": "BIGINT"}
+    )
+    assert "3 categories" in advice.reason

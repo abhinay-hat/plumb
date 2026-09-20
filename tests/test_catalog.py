@@ -221,3 +221,33 @@ def test_large_table_profiles_under_10_seconds(tmp_path: Path) -> None:
     elapsed = time.perf_counter() - started
     assert tables[0].row_count == 200_000
     assert elapsed < 10
+
+
+def test_two_uploads_holding_the_same_table_stay_distinguishable() -> None:
+    """A display name is only short while it is unique across the whole upload.
+
+    `ingest` sees one file at a time, so each of these looked unambiguous on
+    its own. Resolved per file, both became `employees` and `alias_map`
+    collapsed them onto whichever loaded last.
+    """
+    _, tables = catalog.ingest_many(
+        [str(FIXTURES / "employees.csv"), str(FIXTURES / "northwind_hr_analytics.xlsx")],
+        "s",
+    )
+    shown = [catalog.display_name(t).lower() for t in tables]
+
+    assert len(shown) == len(set(shown)), f"two tables share a display name: {shown}"
+    # Every alias still points at the table it was built from.
+    aliases = catalog.alias_map(tables)
+    for table in tables:
+        alias = catalog.display_name(table).lower()
+        assert aliases.get(alias, table.name) == table.name
+
+
+def test_a_table_remembers_which_file_it_came_from() -> None:
+    _, tables = catalog.ingest_many(
+        [str(FIXTURES / "employees.csv"), str(FIXTURES / "northwind_hr_analytics.xlsx")],
+        "s",
+    )
+    sources = {t.source_file for t in tables}
+    assert sources == {"employees.csv", "northwind_hr_analytics.xlsx"}

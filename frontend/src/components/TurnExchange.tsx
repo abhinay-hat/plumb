@@ -6,6 +6,7 @@ export type TurnRoute = AskResponse["route"] | "pending" | "error";
 const RESPONSE_SHELL: Record<TurnRoute, string> = {
   chat: "border-l-ink/40 bg-ticket",
   answer: "border-l-answer bg-ticket",
+  dashboard: "border-l-answer bg-ticket",
   clarify: "border-l-clarify bg-clarify",
   refuse: "border-l-refuse bg-panel",
   error: "border-l-clarify bg-ticket",

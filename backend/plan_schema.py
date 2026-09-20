@@ -6,7 +6,10 @@ from __future__ import annotations
 PLAN_JSON_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "route": {"type": "string", "enum": ["answer", "clarify", "refuse", "chat"]},
+        "route": {
+            "type": "string",
+            "enum": ["answer", "clarify", "refuse", "chat", "dashboard"],
+        },
         "sql": {"type": ["string", "null"]},
         "clarify_question": {"type": ["string", "null"]},
         "clarify_options": {
@@ -29,6 +32,35 @@ PLAN_JSON_SCHEMA: dict = {
                 {"type": "null"},
             ]
         },
+        "chart_spec": {
+            "anyOf": [
+                {"type": "string"},
+                {"type": "null"},
+            ]
+        },
+        "panels": {
+            "anyOf": [
+                {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "sql": {"type": ["string", "null"]},
+                            "chart_spec": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "null"},
+                                ]
+                            },
+                        },
+                        "required": ["title", "sql", "chart_spec"],
+                        "additionalProperties": False,
+                    },
+                },
+                {"type": "null"},
+            ]
+        },
     },
     "required": [
         "route",
@@ -41,6 +73,8 @@ PLAN_JSON_SCHEMA: dict = {
         "chart",
         "chart_x",
         "chart_y",
+        "chart_spec",
+        "panels",
     ],
     "additionalProperties": False,
 }

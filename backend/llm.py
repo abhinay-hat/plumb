@@ -14,6 +14,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 from dotenv import load_dotenv
 
+from backend import router
 from backend.endpoint_guard import EndpointError, ValidatedEndpoint, inspect_endpoint
 from backend.plan_schema import PLAN_JSON_SCHEMA
 from backend.providers import (
@@ -149,6 +150,10 @@ def current_model() -> str:
     if bound is not None and bound.model:
         return bound.model
     provider = current_provider()
+    if provider == "auto":
+        # Before the first call there is no answer yet; after one, the winning
+        # candidate is bound and the branch above already returned its name.
+        return os.environ.get("PLUMB_MODEL", "auto")
     if provider == "ollama":
         return os.environ.get("PLUMB_MODEL", OLLAMA_MODEL)
     if provider == "openrouter":
@@ -188,6 +193,8 @@ def configure(provider: str, model: str) -> None:
 def env_pin() -> BoundEndpoint:
     """The process-wide pin from the environment. Used when no session override exists."""
     provider = os.environ.get("PLUMB_PROVIDER", "groq").strip().lower() or "groq"
+    if provider == "auto":
+        return BoundEndpoint("auto", os.environ.get("PLUMB_MODEL", "auto"))
     if provider == "custom":
         url = os.environ.get("PLUMB_CUSTOM_URL", "").strip()
         model = os.environ.get("PLUMB_CUSTOM_MODEL", os.environ.get("PLUMB_MODEL", "")).strip()
@@ -232,6 +239,16 @@ def catalog(session: object | None = None) -> dict[str, object]:
     selected = pin.preset_id or pin.provider
     providers: list[dict[str, object]] = []
     for item in PROVIDERS:
+        if item["id"] == "auto":
+            providers.append(
+                {
+                    "id": "auto",
+                    "label": item["label"],
+                    "models": [{"id": "auto", "label": "Best available"}],
+                    "kind": "auto",
+                }
+            )
+            continue
         if item["id"] == "custom":
             models: list[dict[str, str]] = []
             if pin.provider == "custom" and pin.model and not pin.preset_id:
@@ -424,8 +441,16 @@ def _extract(provider: str, body: dict) -> str:
     return content
 
 
-def complete(system: str, user: str, json_mode: bool = True) -> str:
-    """Send one prompt to the configured provider and return the raw text."""
+def _complete_once(
+    system: str, user: str, json_mode: bool = True, wait_on_limit: bool = True
+) -> str:
+    """Send one prompt to the currently bound provider and return the raw text.
+
+    `wait_on_limit=False` turns a 429 into an immediate raise. Waiting out a
+    rate limit only makes sense when this provider is the only one there is;
+    with a pool behind it, sleeping here would spend the user's patience on a
+    queue while an idle provider sits unused.
+    """
     provider = current_provider()
     pinned_ip: str | None = None
     pinned_host: str | None = None
@@ -475,7 +500,11 @@ def complete(system: str, user: str, json_mode: bool = True) -> str:
             throttled += 1
             wait = _retry_wait(response)
             pause = (2.0 if wait is None else wait) + _RETRY_PAD_SECONDS
-            if throttled >= RATE_LIMIT_ATTEMPTS or slept + pause > RATE_LIMIT_BUDGET_SECONDS:
+            if (
+                not wait_on_limit
+                or throttled >= RATE_LIMIT_ATTEMPTS
+                or slept + pause > RATE_LIMIT_BUDGET_SECONDS
+            ):
                 raise RateLimitError(
                     _scrub(
                         f"{provider} is rate-limited after {throttled} attempt(s) "
@@ -525,6 +554,88 @@ def complete(system: str, user: str, json_mode: bool = True) -> str:
     raise LLMError(
         _scrub(f"{provider} failed after 2 attempts: {last}", key)
     ) from last
+
+
+def _pinned_candidate() -> router.Candidate | None:
+    """The bound endpoint as a routing candidate, so an explicit pick goes first."""
+    bound = _bound.get() or env_pin()
+    if not bound.model or bound.provider == "auto":
+        return None
+    return router.Candidate(
+        provider=bound.provider,
+        model=bound.model,
+        url=bound.url,
+        key=bound.key,
+        preset_id=bound.preset_id,
+    )
+
+
+def complete(system: str, user: str, json_mode: bool = True) -> str:
+    """Answer this prompt using whichever free model can, right now.
+
+    With routing off this is one call to one provider, exactly as before. With
+    it on, a rate limit or a withdrawn model is not the end of the turn: the
+    provider is marked as cooling and the next candidate is tried. Only when
+    every candidate has refused does the error reach the user — and then it is
+    the truthful one, because by then it really is unanswerable.
+    """
+    if not router.routing_enabled():
+        return _complete_once(system, user, json_mode)
+
+    candidates = router.order(_pinned_candidate())
+    if not candidates:
+        raise LLMError(
+            "no provider is configured; set GROQ_API_KEY, OPENROUTER_API_KEY, "
+            "run Ollama, or configure a preset"
+        )
+
+    last: Exception | None = None
+    for candidate in candidates:
+        health = router.health_for(candidate.name)
+        token = bind(
+            BoundEndpoint(
+                candidate.provider,
+                candidate.model,
+                url=candidate.url,
+                key=candidate.key,
+                preset_id=candidate.preset_id,
+            )
+        )
+        started = time.perf_counter()
+        answered = False
+        try:
+            answer = _complete_once(system, user, json_mode, wait_on_limit=False)
+            answered = True
+        except RateLimitError as e:
+            last = e
+            health.record_failure(e.retry_after)
+            log.warning("%s is rate-limited, trying the next model", candidate.name)
+            continue
+        except ProviderUnavailableError as e:
+            last = e
+            health.record_failure(None)
+            log.warning("%s is unavailable, trying the next model", candidate.name)
+            continue
+        except LLMError as e:
+            last = e
+            health.record_failure(None)
+            log.warning("%s failed (%s), trying the next model", candidate.name, e)
+            continue
+        finally:
+            # The winner stays bound on purpose: the caller reads
+            # current_model() to report which model actually answered.
+            if not answered:
+                reset(token)
+        health.record_success((time.perf_counter() - started) * 1000)
+        return answer
+
+    names = ", ".join(c.name for c in candidates)
+    if isinstance(last, RateLimitError):
+        raise RateLimitError(
+            f"every configured model is rate-limited right now ({names})",
+            retry_after=last.retry_after,
+        ) from last
+    raise LLMError(f"no configured model could answer ({names}): {last}") from last
 
 
 def probe(url: str, key: str | None, model: str) -> ValidatedEndpoint:

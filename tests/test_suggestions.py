@@ -81,3 +81,64 @@ def test_a_rendered_chart_is_not_offered_again() -> None:
 
 def test_follow_ups_stay_empty_without_a_schema() -> None:
     assert suggestions.follow_ups(["a"], [[1]], []) == []
+
+
+def test_a_question_already_asked_is_never_suggested_again() -> None:
+    tables = _hr_tables()
+    repeat = "What's the average tenure days in northwind_hr_analytics_employees?"
+
+    out = suggestions.follow_ups(
+        ["average_tenure_days"], [[572.378125]], tables, asked=[repeat]
+    )
+
+    assert all(suggestions._asked_key(repeat) != suggestions._asked_key(q) for q in out)
+
+
+def test_punctuation_and_case_do_not_smuggle_a_repeat_through() -> None:
+    tables = _hr_tables()
+    out = suggestions.follow_ups(
+        ["average_tenure_days"],
+        [[1.0]],
+        tables,
+        asked=["  WHAT'S THE AVERAGE TENURE DAYS IN NORTHWIND_HR_ANALYTICS_EMPLOYEES  "],
+    )
+    assert "average tenure days in northwind_hr_analytics_employees" not in " ".join(
+        q.lower() for q in out
+    )
+
+
+def test_a_single_aggregate_is_offered_a_breakdown() -> None:
+    """One number names no schema column, so every column-based branch misses."""
+    tables = _hr_tables()
+
+    out = suggestions.follow_ups(["average_tenure_days"], [[572.378125]], tables)
+
+    assert out, "a single number should still suggest how to cut it"
+    assert any(" by " in q for q in out)
+
+
+def test_the_same_question_reworded_is_still_a_repeat() -> None:
+    """Naming the table an answer already came from is not a new question."""
+    tables = _hr_tables()
+
+    out = suggestions.follow_ups(
+        ["average_salary"],
+        [[91000.0]],
+        tables,
+        asked=["What is the average salary?"],
+    )
+
+    assert not any("average salary in" in q.lower() for q in out), out
+
+
+def test_a_genuinely_different_cut_survives_the_filter() -> None:
+    tables = _hr_tables()
+
+    out = suggestions.follow_ups(
+        ["average_salary"],
+        [[91000.0]],
+        tables,
+        asked=["What is the average salary?"],
+    )
+
+    assert any(" by " in q for q in out), f"a breakdown is a new question: {out}"

@@ -49,6 +49,13 @@ export function SchemaPanel({ tables }: Props) {
                     {table.name}
                   </span>
                 ) : null}
+                {/* Two uploads can each hold an `employees`. The filename is
+                    what tells them apart at a glance. */}
+                {table.source_file ? (
+                  <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted/75">
+                    {table.source_file}
+                  </span>
+                ) : null}
               </span>
               <span className="shrink-0 pt-0.5 font-mono text-[10px] tabular-nums text-muted">
                 {formatRows(table.row_count)}

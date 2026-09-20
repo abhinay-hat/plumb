@@ -1,12 +1,15 @@
-"""Assemble the Vega-Lite spec in Python.
+"""Assemble Vega-Lite specs in Python, and rank what shape the rows want.
 
-The model only picks a chart type and column names. A model-authored spec is
-never used: Vega-Lite renders an invalid spec as a blank chart rather than
-throwing, so a bad spec would fail silently.
+Model-authored specs go through chart_guard first — Vega-Lite renders an
+invalid spec as a blank chart rather than throwing, so unvalidated specs would
+fail silently. When chart_spec is absent or rejected, this module builds from
+the plan's chart fields or from the result-shape recommendation.
 """
 
 from __future__ import annotations
 
+import difflib
+import json
 import re
 
 from backend.guard import match_column
@@ -14,6 +17,9 @@ from backend.models import ChartAdvice, Plan
 
 MAX_ROWS = 50
 MIN_ROWS = 2
+# Past this many marks the value labels overlap each other and the chart is
+# harder to read with them than without.
+LABEL_MAX_POINTS = 24
 _TEMPORAL = ("DATE", "TIMESTAMP", "TIME")
 _QUANTITATIVE = (
     "INT",
@@ -64,26 +70,34 @@ def enrich_dtypes(
     return merged
 
 
+# The words that mean "draw this". Matched with a little tolerance because
+# "line chat" and "bar grpah" are the same request as "line chart", and being
+# pedantic about a typo costs the user their chart.
+_DRAW_WORDS = ("chart", "graph", "plot", "visualise", "visualize", "visualisation")
+_KIND_WORDS = ("bar", "line", "pie", "scatter")
+
+
+def _mentions(word: str, tokens: list[str]) -> bool:
+    """Whether `word` appears, allowing one typo in anything long enough to risk one."""
+    if word in tokens:
+        return True
+    return bool(difflib.get_close_matches(word, tokens, n=1, cutoff=0.8))
+
+
 def visualization_kind(question: str) -> str | None:
     """Detect a chart-only follow-up such as 'show this as a bar chart'."""
     q = question.lower().strip()
     if not q:
         return None
-    if re.search(r"\bbar\b", q) and ("chart" in q or "graph" in q):
-        return "bar"
-    if re.search(r"\bline\b", q) and ("chart" in q or "graph" in q):
-        return "line"
-    if re.search(r"\bpie\b", q) and ("chart" in q or "graph" in q):
-        return "pie"
-    if "scatter" in q:
-        return "scatter"
-    if "bar chart" in q or "as a bar" in q or "in bar" in q:
-        return "bar"
-    if "pie chart" in q or "as a pie" in q or "in pie" in q:
-        return "pie"
-    if any(token in q for token in ("chart", "graph", "visuali", "plot")):
-        return "bar"
-    return None
+    tokens = [t for t in re.split(r"[^a-z]+", q) if t]
+    asked_to_draw = any(_mentions(word, tokens) for word in _DRAW_WORDS)
+    named = next((kind for kind in _KIND_WORDS if _mentions(kind, tokens)), None)
+    if asked_to_draw:
+        # "as a bar" with no kind named still means draw something; the shape
+        # of the result decides which, upstream of here.
+        return named or "bar"
+    # "scatter" and "as a pie" name a chart without the word chart in sight.
+    return named
 
 
 def infer_axes(columns: list[str], dtypes: dict[str, str]) -> tuple[str, str] | None:
@@ -116,8 +130,73 @@ def infer_axes(columns: list[str], dtypes: dict[str, str]) -> tuple[str, str] | 
     return x, y
 
 
+def _escape(field: str) -> str:
+    """A column name inside a Vega expression. `Order Date` needs the brackets."""
+    return "datum[" + json.dumps(field) + "]"
+
+
+def number_format(values: list) -> str:
+    """A d3 format string sized to the numbers actually present.
+
+    `664.8717948717949` is the arithmetic, not the answer. How many decimals
+    help is a property of the magnitudes in front of us: thousands need none,
+    a column of small ratios needs two. Reading it off the data means the same
+    code formats rupees and percentages without being told which it has.
+    """
+    numbers = [abs(v) for v in values if _is_numeric_cell(v)]
+    if not numbers:
+        return ""
+    if all(float(v).is_integer() for v in numbers):
+        return ","
+    largest = max(numbers)
+    if largest >= 1000:
+        return ",.0f"
+    if largest >= 10:
+        return ",.1f"
+    return ",.2f"
+
+
+# A NULL category is a real group — "the rows with no department" — so it is
+# labelled rather than dropped. Silently filtering it would change the total.
+BLANK_LABEL = "(blank)"
+
+
+def _label_layer(text: dict, compact: bool = False, **mark) -> dict:
+    """A text mark carrying the value, so a chart can be read without a ruler."""
+    size = 9 if compact else 11
+    return {
+        "mark": {"type": "text", "fontSize": size, **mark},
+        "encoding": {"text": text},
+    }
+
+
+def compact_spec(spec: dict) -> dict:
+    """Strip dashboard clutter — title lives on the panel header."""
+    out = dict(spec)
+    out.pop("title", None)
+    encoding = out.get("encoding")
+    if isinstance(encoding, dict):
+        enc = dict(encoding)
+        x_field = enc.get("x", {}).get("field") if isinstance(enc.get("x"), dict) else None
+        color = enc.get("color")
+        if (
+            x_field
+            and isinstance(color, dict)
+            and color.get("field") == x_field
+            and color.get("type") == "nominal"
+        ):
+            enc.pop("color", None)
+        out["encoding"] = enc
+    return out
+
+
 def build_spec(
-    plan: Plan, columns: list[str], rows: list[list], dtypes: dict[str, str]
+    plan: Plan,
+    columns: list[str],
+    rows: list[list],
+    dtypes: dict[str, str],
+    *,
+    compact: bool = False,
 ) -> dict | None:
     """Vega-Lite spec without `data` — the caller injects the rows."""
     if plan.chart == "none" or not plan.chart_x or not plan.chart_y:
@@ -138,22 +217,58 @@ def build_spec(
 
     y = ys[0]
     mark = {"bar": "bar", "line": "line", "pie": "arc", "scatter": "point"}[plan.chart]
-    title = f"{y} by {x}"
+    title = None if compact else f"{y} by {x}"
+    fmt = number_format(_column_values(columns, rows, y))
+    value_text = {"field": y, "type": "quantitative", "format": fmt}
+    # A null x is a group with no name, not a missing row. Naming it keeps the
+    # legend honest instead of printing "null" at the reader.
+    blanks = [
+        {
+            "calculate": f"{_escape(x)} == null ? '{BLANK_LABEL}' : {_escape(x)}",
+            "as": x,
+        }
+    ]
 
     if plan.chart == "pie":
-        return {
+        total = "__total"
+        share = "__share"
+        pie: dict = {
             "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "title": title,
-            "mark": {"type": "arc"},
+            "transform": blanks
+            + [
+                # Share of total is the only thing a pie says better than a
+                # table, so it is what the slice is labelled with.
+                {"joinaggregate": [{"op": "sum", "field": y, "as": total}], "groupby": []},
+                {"calculate": f"{_escape(y)} / datum['{total}']", "as": share},
+            ],
             "encoding": {
-                "theta": {"field": y, "type": "quantitative"},
-                "color": {"field": x, "type": "nominal"},
+                "theta": {"field": y, "type": "quantitative", "stack": True},
+                "color": {"field": x, "type": "nominal", "title": x},
                 "tooltip": [
-                    {"field": x, "type": field_type(x)},
-                    {"field": y, "type": "quantitative"},
+                    {"field": x, "type": "nominal"},
+                    {"field": y, "type": "quantitative", "format": fmt},
+                    {"field": share, "type": "quantitative", "format": ".1%", "title": "share"},
                 ],
             },
+            "layer": [
+                {
+                    "mark": {
+                        "type": "arc",
+                        "outerRadius": 88 if compact else 110,
+                    }
+                },
+            ],
         }
+        if title:
+            pie["title"] = title
+        if not compact:
+            pie["layer"].append(
+                _label_layer(
+                    {"field": share, "type": "quantitative", "format": ".0%"},
+                    radius=132,
+                )
+            )
+        return pie
 
     x_encoding: dict = {"field": x, "type": field_type(x), "title": x}
     if plan.chart == "bar" and x_encoding["type"] == "nominal":
@@ -161,15 +276,27 @@ def build_spec(
 
     spec: dict = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "title": title,
-        "mark": {"type": mark, "tooltip": True},
+        "transform": blanks if field_type(x) == "nominal" else [],
         "encoding": {
             "x": x_encoding,
             "y": {"field": y, "type": field_type(y), "title": y},
         },
+        "layer": [{"mark": {"type": mark, "tooltip": True, "point": plan.chart == "line"}}],
     }
+    if title:
+        spec["title"] = title
     if len(ys) > 1:
-        spec["encoding"]["color"] = {"field": ys[1], "type": field_type(ys[1])}
+        color_field = ys[1]
+        if not (compact and color_field == x):
+            spec["encoding"]["color"] = {"field": color_field, "type": field_type(color_field)}
+    # One number per mark is readable; a scatter of forty points labelled forty
+    # times is not, and the tooltip already answers "which point is this".
+    if (
+        not compact
+        and plan.chart in ("bar", "line")
+        and len(rows) <= LABEL_MAX_POINTS
+    ):
+        spec["layer"].append(_label_layer(value_text, dy=-8))
     return spec
 
 
@@ -194,6 +321,11 @@ def _classify(
 def _column_values(columns: list[str], rows: list[list], col: str) -> list:
     i = columns.index(col)
     return [row[i] for row in rows if i < len(row) and row[i] is not None]
+
+
+def _has_null(columns: list[str], rows: list[list], col: str) -> bool:
+    i = columns.index(col)
+    return any(i >= len(row) or row[i] is None for row in rows)
 
 
 def _unsupported_shape(columns: list[str]) -> str | None:
@@ -234,7 +366,11 @@ def _measure(columns: list[str], rows: list[list], dtypes: dict[str, str]) -> di
     if y is not None and x == y:
         x = next((col for col in columns if col != y), None)
     x_values = _column_values(columns, rows, x) if x else []
-    points = len(set(map(str, x_values)))
+    # A null x is drawn as its own `(blank)` bar, so it has to be counted as a
+    # category too — otherwise the reason says five and the chart shows six.
+    points = len(set(map(str, x_values))) + (
+        1 if x and _has_null(columns, rows, x) else 0
+    )
     measures = [v for v in (_column_values(columns, rows, y) if y else []) if _is_numeric_cell(v)]
     total = sum(abs(v) for v in measures)
     return {
@@ -378,6 +514,39 @@ def recommend(
         alternatives=ranked[1:],
         unsupported=unsupported,
     )
+
+
+def build_from_advice(
+    advice: ChartAdvice,
+    columns: list[str],
+    rows: list[list],
+    dtypes: dict[str, str],
+    *,
+    compact: bool = False,
+) -> dict | None:
+    """Draw what the result shape asked for, when the question named nothing.
+
+    The brief asks for a chart "where the question calls for one". A question
+    calls for one when its *answer* has a shape — which is what `recommend`
+    already measured. Leaving that measurement unrendered produced the worst
+    of both: a card that said "better as a bar" above no chart at all.
+    """
+    if advice.kind == "none" or not advice.x or not advice.y:
+        return None
+    spec = build_spec(
+        Plan(
+            route="answer",
+            sql="",
+            chart=advice.kind,  # type: ignore[arg-type]
+            chart_x=advice.x,
+            chart_y=[advice.y],
+        ),
+        columns,
+        rows,
+        dtypes,
+        compact=compact,
+    )
+    return compact_spec(spec) if spec is not None and compact else spec
 
 
 def build_spec_for_question(

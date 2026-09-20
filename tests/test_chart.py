@@ -33,7 +33,7 @@ def test_bar_spec_has_no_data_and_sorts_descending() -> None:
     spec = chart.build_spec(bar_plan(), COLUMNS, ROWS, DTYPES)
     assert spec is not None
     assert "data" not in spec
-    assert spec["mark"]["type"] == "bar"
+    assert spec["layer"][0]["mark"]["type"] == "bar"
     assert spec["encoding"]["x"]["sort"]["order"] == "descending"
     assert spec["encoding"]["y"]["field"] == "headcount"
     assert spec["title"]
@@ -50,7 +50,7 @@ def test_line_spec_uses_temporal_x() -> None:
 
 def test_pie_spec_uses_theta_and_color() -> None:
     spec = chart.build_spec(bar_plan(chart="pie"), COLUMNS, ROWS, DTYPES)
-    assert spec["mark"]["type"] == "arc"
+    assert spec["layer"][0]["mark"]["type"] == "arc"
     assert spec["encoding"]["theta"]["field"] == "headcount"
     assert spec["encoding"]["color"]["field"] == "department"
 
@@ -118,7 +118,7 @@ def test_build_spec_for_question_infers_bar_when_plan_has_none() -> None:
     )
     assert kind == "bar"
     assert spec is not None
-    assert spec["mark"]["type"] == "bar"
+    assert spec["layer"][0]["mark"]["type"] == "bar"
 
 
 def test_build_spec_for_question_infers_bar_without_alias_in_table_schema() -> None:
@@ -141,3 +141,41 @@ def test_second_measure_becomes_colour() -> None:
     plan = bar_plan(chart_y=["headcount", "location"])
     spec = chart.build_spec(plan, columns, rows, dtypes)
     assert spec["encoding"]["color"]["field"] == "location"
+
+
+def test_every_bar_carries_its_value() -> None:
+    spec = chart.build_spec(bar_plan(), COLUMNS, ROWS, DTYPES)
+    label = spec["layer"][-1]
+    assert label["mark"]["type"] == "text"
+    assert label["encoding"]["text"]["field"] == "headcount"
+
+
+def test_a_pie_slice_is_labelled_with_its_share() -> None:
+    spec = chart.build_spec(bar_plan(chart="pie"), COLUMNS, ROWS, DTYPES)
+    label = spec["layer"][-1]
+    assert label["mark"]["type"] == "text"
+    assert label["encoding"]["text"]["format"] == ".0%"
+    # The share is computed in the spec, so it stays right if Vega re-filters.
+    assert any("joinaggregate" in step for step in spec["transform"])
+
+
+def test_a_null_category_is_named_rather_than_printed_as_null() -> None:
+    rows = [["Sales", 3], [None, 2]]
+    spec = chart.build_spec(bar_plan(), ["department", "headcount"], rows, DTYPES)
+    calculate = spec["transform"][0]["calculate"]
+    assert chart.BLANK_LABEL in calculate
+    assert spec["transform"][0]["as"] == "department"
+
+
+def test_labels_are_dropped_once_they_would_overlap() -> None:
+    rows = [[f"d{i}", i] for i in range(chart.LABEL_MAX_POINTS + 2)]
+    spec = chart.build_spec(bar_plan(), ["department", "headcount"], rows, DTYPES)
+    assert [layer["mark"]["type"] for layer in spec["layer"]] == ["bar"]
+
+
+def test_number_format_follows_the_magnitudes_present() -> None:
+    assert chart.number_format([4, 10, 7]) == ","          # counts stay whole
+    assert chart.number_format([664.87179, 427.75]) == ",.1f"  # 664.9, not 664.8717948
+    assert chart.number_format([12000.5, 90.25]) == ",.0f"  # thousands need no decimals
+    assert chart.number_format([0.51, 0.2]) == ",.2f"      # ratios need decimals
+    assert chart.number_format(["x", None]) == ""

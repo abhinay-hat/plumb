@@ -47,6 +47,15 @@ do not "update" it when a provider changes its line-up. `PLUMB_LIVE_MODELS=0` di
 discovery, which `tests/conftest.py` sets for the whole suite so `make test` stays off
 the network.
 
+`backend/router.py` decides *which* free model answers. `PLUMB_PROVIDER=auto` (or any
+pin, since failover stays on unless `PLUMB_ROUTE=0`) pools every provider whose key is
+present. A 429 marks that candidate as cooling — using the provider's own `Retry-After`
+— and the turn moves to the next one instead of failing; `_complete_once(...,
+wait_on_limit=False)` is what stops it sleeping on a queue while an idle provider waits.
+Ranking is learned: cooldown, consecutive failures, advertised JSON support,
+EWMA latency, context length. No model is ranked by name. The winner stays bound so
+`current_model()` reports who actually answered.
+
 A user-supplied custom URL is untrusted input. `backend/endpoint_guard.py` validates
 it the same way `guard.py` validates SQL: scheme, resolved address, pinned IP, no
 redirects, port allowlist. Custom keys live on the session, not in `os.environ`.

@@ -23,26 +23,13 @@ class TableInfo(BaseModel):
     row_count: int
     columns: list[ColumnInfo]
     sheet_name: str | None = None  # the sheet/file part, without the file stem
+    source_file: str = ""  # the uploaded filename this table came out of
     display_name: str = ""  # what the model is shown; "" means use `name`
     grain_column: str | None = None  # the FK this table repeats over
     grain_entities: int | None = None  # distinct values of that column
     rows_per_entity: float | None = None
     is_history_table: bool = False
     history_date_column: str | None = None  # the effective-date column, when found
-
-
-class Plan(BaseModel):
-    route: Literal["answer", "clarify", "refuse", "chat"]
-    sql: str | None = None
-    clarify_question: str | None = None
-    clarify_options: list[str] | None = None
-    clarify_term: str | None = None  # which term this clarification is about
-    refuse_reason: str | None = None
-    reply: str | None = None  # route == "chat"
-    chart: Literal["bar", "line", "pie", "scatter", "none"] = "none"
-    chart_x: str | None = None
-    chart_y: list[str] | None = None
-    guard_code: str | None = None  # why the planner gave up, when it did
 
 
 class ChartAdvice(BaseModel):
@@ -65,8 +52,38 @@ class ChartAdvice(BaseModel):
     rendered: str | None = None  # the chart actually drawn, when it differs
 
 
+class Panel(BaseModel):
+    """One cut of the data inside a dashboard answer."""
+
+    title: str
+    sql: str | None = None
+    chart_spec: dict | None = None
+    columns: list[str] | None = None
+    rows: list[list] | None = None
+    chart: dict | None = None
+    finding: str = ""
+    chart_advice: ChartAdvice | None = None
+    error_code: str | None = None
+
+
+class Plan(BaseModel):
+    route: Literal["answer", "clarify", "refuse", "chat", "dashboard"]
+    sql: str | None = None
+    clarify_question: str | None = None
+    clarify_options: list[str] | None = None
+    clarify_term: str | None = None  # which term this clarification is about
+    refuse_reason: str | None = None
+    reply: str | None = None  # route == "chat"
+    chart: Literal["bar", "line", "pie", "scatter", "none"] = "none"
+    chart_x: str | None = None
+    chart_y: list[str] | None = None
+    chart_spec: dict | None = None  # model-authored Vega-Lite, validated before use
+    panels: list[Panel] | None = None  # route == "dashboard"
+    guard_code: str | None = None  # why the planner gave up, when it did
+
+
 class AskResponse(BaseModel):
-    route: Literal["answer", "clarify", "refuse", "chat", "error"]
+    route: Literal["answer", "clarify", "refuse", "chat", "error", "dashboard"]
     sql: str | None = None
     columns: list[str] | None = None
     rows: list[list] | None = None
@@ -81,6 +98,8 @@ class AskResponse(BaseModel):
     error_message: str | None = None
     tables_sent: list[str] | None = None  # which tables the planner was shown
     chart_advice: ChartAdvice | None = None
+    panels: list[Panel] | None = None
+    summary: str | None = None  # optional one-paragraph tie-together, off by default
     follow_ups: list[str] = []  # next questions, derived from this result
     definitions_applied: dict[str, str] = {}
     elapsed_ms: int

@@ -30,6 +30,9 @@ DISCOVERY_TIMEOUT_SECONDS = 4.0
 DISCOVERY_TTL_SECONDS = 300.0
 
 PROVIDERS: tuple[dict[str, str], ...] = (
+    # Auto is first because it is the right default: every free tier is small
+    # enough to exhaust mid-demo, and the pool is what keeps a turn answerable.
+    {"id": "auto", "label": "Auto"},
     {"id": "groq", "label": "Groq"},
     {"id": "openrouter", "label": "OpenRouter"},
     {"id": "ollama", "label": "Ollama"},
@@ -59,7 +62,7 @@ FALLBACK_MODELS: dict[str, tuple[dict[str, str], ...]] = {
 
 # The provider ids the process pin accepts. `custom` is deliberately absent:
 # a custom endpoint is per session so its key never becomes process state.
-BUILTIN_PROVIDERS: tuple[str, ...] = ("groq", "openrouter", "ollama")
+BUILTIN_PROVIDERS: tuple[str, ...] = ("auto", "groq", "openrouter", "ollama")
 
 # Cerebras, Together, and SambaNova ended their free tiers in mid-2026.
 # Presetting a dead free tier just produces a confusing 402.
@@ -104,6 +107,17 @@ PRESETS: tuple[dict[str, Any], ...] = (
         "account_env": "CF_ACCOUNT_ID",
         "models": (
             {"id": "@cf/meta/llama-3.1-8b-instruct", "label": "Llama 3.1 8B"},
+        ),
+    },
+    {
+        # The inference router, not a single vendor: one token reaches whatever
+        # open-weight models the free tier is serving that week.
+        "id": "huggingface",
+        "label": "Hugging Face",
+        "url": "https://router.huggingface.co/v1/chat/completions",
+        "key_env": "HF_TOKEN",
+        "models": (
+            {"id": "Qwen/Qwen2.5-7B-Instruct", "label": "Qwen2.5 7B"},
         ),
     },
     {
@@ -222,7 +236,17 @@ def _parse_models(provider_id: str, body: Any) -> list[dict[str, str]]:
         if not _usable(provider_id, row):
             continue
         seen.add(model_id)
-        found.append({"id": model_id, "label": _label_for(row)})
+        entry: dict[str, str] = {"id": model_id, "label": _label_for(row)}
+        # Carried for the router, which ranks candidates on what the provider
+        # publishes rather than on anyone's opinion of a model name. The picker
+        # reads id/label and ignores the rest.
+        context = row.get("context_length") or row.get("context_window")
+        if isinstance(context, (int, float)) and context > 0:
+            entry["context"] = str(int(context))
+        published = _strings(row.get("supported_parameters"), row.get("supported_features"))
+        if {"structured_outputs", "json_mode"} & set(published):
+            entry["json_native"] = "1"
+        found.append(entry)
     found.sort(key=lambda row: row["label"].lower())
     return found
 

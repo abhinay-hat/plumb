@@ -16,11 +16,26 @@ function isNumeric(value: Cell): boolean {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+/** Decimals that help, read off the magnitude — same rule as chart.number_format. */
+function decimalsFor(value: number): number {
+  const size = Math.abs(value);
+  if (size >= 1000) return 0;
+  if (size >= 10) return 1;
+  return 2;
+}
+
 function formatCell(value: Cell): string {
   if (value === null) return "";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
-    return Number.isInteger(value) ? value.toLocaleString() : String(value);
+    if (Number.isInteger(value)) return value.toLocaleString();
+    // An average lands on 664.8717948717949; sixteen digits of float noise is
+    // not extra precision, it is the division showing through. The full value
+    // stays in the cell's title so nothing is actually hidden.
+    return value.toLocaleString(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: decimalsFor(value),
+    });
   }
   return value;
 }
@@ -157,6 +172,7 @@ export function AnswerCard({ response, onAsk }: Props) {
                     return (
                       <td
                         key={col}
+                        title={value === null ? undefined : String(value)}
                         className={[
                           "border-b border-line px-3 py-1.5 font-mono text-[12px] text-ink",
                           isNumeric(value) ? "text-right tabular-nums" : "",

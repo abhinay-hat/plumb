@@ -181,6 +181,10 @@ def _log_turn(session_id: str, question: str, response: AskResponse) -> None:
     verified = False
     if response.route == "answer" and response.rows is not None:
         verified = narrate.verify_narration(response.narration or "", response.rows)
+    panel_sql: list[str | None] = []
+    if response.route == "dashboard" and response.panels:
+        row_count = sum(len(p.rows or []) for p in response.panels)
+        panel_sql = [p.sql for p in response.panels]
     audit.append(
         session_id,
         {
@@ -201,12 +205,14 @@ def _log_turn(session_id: str, question: str, response: AskResponse) -> None:
             "tables_sent": response.tables_sent,
             "definitions_applied": dict(response.definitions_applied),
             "narration_verified": verified,
+            # From the advice, not the spec: a spec with value labels is
+            # layered, so there is no top-level mark to read a kind off.
             "chart_kind": (
-                response.chart.get("mark", {}).get("type")
-                if isinstance(response.chart, dict)
-                else None
+                response.chart_advice.rendered if response.chart_advice else None
             ),
             "chart_rendered": response.chart is not None,
+            "panel_count": len(response.panels) if response.panels else 0,
+            "panel_sql": panel_sql,
         },
     )
 

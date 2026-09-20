@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import { AnswerCard } from "./components/AnswerCard";
+import { DashboardCard } from "./components/DashboardCard";
 import { AuditDrawer } from "./components/AuditDrawer";
 import { ChatCard } from "./components/ChatCard";
 import { ClarifyCard } from "./components/ClarifyCard";
@@ -320,6 +321,13 @@ export default function App() {
                     <RefuseCard response={turn.response} />
                   ) : turn.response.route === "chat" ? (
                     <ChatCard response={turn.response} />
+                  ) : turn.response.route === "dashboard" ? (
+                    <DashboardCard
+                      response={turn.response}
+                      onAsk={(question) => {
+                        void runAsk(question);
+                      }}
+                    />
                   ) : turn.response.route === "error" ? (
                     <ErrorCard
                       message={

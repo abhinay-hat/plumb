@@ -40,11 +40,11 @@ make dev
 
 ## Eval
 
-Honest run, **19 September 2026**, against `evals/questions.yaml` (28 questions, both fixtures, `openai/gpt-oss-20b` on Groq):
+Honest run, **20 September 2026**, against `evals/questions.yaml` (30 questions, both fixtures, `openai/gpt-oss-20b` on Groq):
 
-**23/28 (82%)**
+**27/30 (90%)**
 
-Two of the original six failures were Groq 429s that the engine surfaces as `refuse`; `hired before 2021` now answers. The remaining misses are routing or result mismatches — see `evals/results.md` and WRITEUP.md. Prompts were not tuned against this set before recording that number.
+Includes two dashboard routing cases; one dashboard question hit a provider error. The remaining misses are routing disagreements — see `evals/results.md`. Prompts were not tuned against this set before recording that number.
 
 ```bash
 make eval
@@ -67,10 +67,10 @@ No LLM required. The suite covers the deterministic modules — guard, catalog, 
 ## Architecture
 
 1. A spreadsheet is profiled into DuckDB and a schema card. The card carries grain, history-table warnings, case-folding collisions, and null coverage — not just names and types.
-2. `planner.plan` returns one of three routes: answer, clarify, or refuse.
+2. `planner.plan` returns one of five routes: answer, clarify, refuse, chat, or dashboard. Broad overview questions (`analyse this data`, `what is interesting here`) can return a dashboard — several panels, each with its own SQL, chart, and one-line finding, from a single planner call.
 3. Generated SQL is parsed and rewritten; a read-only DuckDB connection is not trusted on its own.
 4. Answers are narrated, then every number in the narration is checked against the rows. Years, ISO dates, and disclosed coverage figures are context, not invented claims.
-5. Charts are assembled in Python from the plan's column names, never from a model-authored spec.
+5. Charts are model-authored Vega-Lite validated by `chart_guard`, with a Python fallback. Dashboard panels use compact specs sized for a grid cell.
 6. FastAPI and the React UI wrap that seam. They do not decide the route.
 
 ## Switch to Ollama
