@@ -431,3 +431,21 @@ def test_the_pinned_path_goes_through_a_client(monkeypatch) -> None:
 
     assert "extensions" not in inspect.signature(httpx.post).parameters
     assert "extensions" in inspect.signature(httpx.Client.post).parameters
+
+
+def test_the_plan_schema_lets_a_refusal_say_it_has_no_chart() -> None:
+    """A refusal writes chart: null, and strict mode enforces this schema.
+
+    Demanding a string here made Groq reject its own correct refusal with a
+    400 — "expected string, but got null" — and the user was told the model
+    had returned something unreadable when it had answered perfectly.
+    """
+    from backend.models import Plan
+    from backend.plan_schema import PLAN_JSON_SCHEMA
+
+    chart_field = PLAN_JSON_SCHEMA["properties"]["chart"]
+    assert "null" in chart_field["type"], "a refusal must be able to say chart: null"
+    assert "enum" not in chart_field
+
+    # And the contract still normalises it to something build_spec can read.
+    assert Plan.model_validate({"route": "refuse", "chart": None}).chart == "none"

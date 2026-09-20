@@ -25,7 +25,13 @@ PLAN_JSON_SCHEMA: dict = {
         # model from ever naming a histogram or a candlestick, and without
         # strict mode it named one anyway and broke the parse. The name is free;
         # what can be drawn is decided by chart.BUILDABLE and chart_guard.
-        "chart": {"type": "string"},
+        #
+        # Null is allowed because a refusal has no chart, and the model says so
+        # by writing null. Demanding a string made Groq reject its own correct
+        # refusal with a 400 — the user saw "the model returned a response plumb
+        # could not read" when the model had answered perfectly. Plan's
+        # validator maps null to "none".
+        "chart": {"type": ["string", "null"]},
         "chart_x": {"type": ["string", "null"]},
         "chart_y": {
             "anyOf": [

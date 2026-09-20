@@ -63,7 +63,7 @@ Open <http://localhost:8000>, drop `fixtures/employees.csv`, and ask.
 <summary><b>Without Docker</b></summary>
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 make setup    # points git at .githooks/ — once per clone
 make build
