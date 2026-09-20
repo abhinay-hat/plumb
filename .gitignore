@@ -22,3 +22,6 @@ frontend/.playwright-cli/
 # Verification logs — regenerable, kept on disk for reading, not history
 qa/_work/*.log
 qa/_work/*.txt
+
+# Agent guidance — useful locally, noise in a public repo
+CLAUDE.md
