@@ -142,3 +142,47 @@ def test_a_genuinely_different_cut_survives_the_filter() -> None:
     )
 
     assert any(" by " in q for q in out), f"a breakdown is a new question: {out}"
+
+
+def test_a_briefing_may_quote_real_row_counts() -> None:
+    from backend import briefing
+
+    tables = _hr_tables()
+    employees = next(t for t in tables if "employees" in t.name)
+    text = f"You have {len(tables)} sheets; employees holds {employees.row_count} rows."
+
+    assert briefing.verify_briefing(text, tables)
+
+
+def test_a_rounded_row_count_is_rejected() -> None:
+    """"about 600 employees" is the failure this whole application refuses."""
+    from backend import briefing
+
+    tables = _hr_tables()
+
+    assert not briefing.verify_briefing("There are about 600 employees.", tables)
+
+
+def test_sentence_furniture_is_not_a_claim() -> None:
+    from backend import briefing
+
+    tables = _hr_tables()
+
+    assert briefing.verify_briefing("Try one of these 3 questions to start.", tables)
+
+
+def test_the_fallback_briefing_names_real_sheets() -> None:
+    from backend import briefing
+
+    tables = _hr_tables()
+    text = briefing.describe(tables)
+
+    assert str(len(tables)) in text
+    assert any(catalog.display_name(t) in text for t in tables)
+    assert briefing.verify_briefing(text, tables), "the fallback must pass its own check"
+
+
+def test_an_empty_session_says_so() -> None:
+    from backend import briefing
+
+    assert "No spreadsheet is loaded" in briefing.describe([])

@@ -9,7 +9,17 @@ from dataclasses import dataclass, field
 
 import duckdb
 
-from backend import catalog, chart, chart_guard, dashboard, guard, llm, narrate, suggestions
+from backend import (
+    briefing,
+    catalog,
+    chart,
+    chart_guard,
+    dashboard,
+    guard,
+    llm,
+    narrate,
+    suggestions,
+)
 from backend.models import AskResponse, ChartAdvice, Panel, Plan, TableInfo
 from backend.planner import plan as make_plan
 from backend.planner import repair_chart_spec
@@ -441,9 +451,18 @@ def _ask(question: str, session: Session) -> AskResponse:
 
     if plan.route == "chat":
         session.history.append({"question": question, "route": "chat", "sql": None})
+        reply = plan.reply or ""
+        # A briefing quotes row counts, which makes it a claim about the data,
+        # so it is checked like a narration: a model that rounds 640 employees
+        # to "about 600" is doing the thing this application exists to refuse.
+        if not briefing.verify_briefing(reply, session.tables):
+            log.warning("chat reply cited a number the schema cannot support: %s", reply)
+            reply = briefing.describe(session.tables)
+        elif not reply.strip():
+            reply = briefing.describe(session.tables)
         return AskResponse(
             route="chat",
-            reply=plan.reply,
+            reply=reply,
             definitions_applied=applied,
             elapsed_ms=elapsed(),
             tables_sent=sent_names,
