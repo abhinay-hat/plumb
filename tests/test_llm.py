@@ -246,6 +246,36 @@ def _ok_openai() -> httpx.Response:
     )
 
 
+class _FakeClient:
+    """Stands in for httpx.Client on the pinned-post path.
+
+    The pinned path must go through a Client: httpx.post takes no `extensions`,
+    so patching the module function hid a TypeError that broke every preset and
+    every custom endpoint in production while the suite stayed green.
+    """
+
+    def __init__(self, seen: dict, response) -> None:
+        self.seen = seen
+        self.response = response
+
+    def __call__(self, **kwargs):
+        self.seen["client_kwargs"] = kwargs
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+    def post(self, url, headers=None, json=None, **kwargs):
+        self.seen["url"] = url
+        self.seen["headers"] = headers
+        self.seen["json"] = json
+        self.seen["kwargs"] = kwargs
+        return self.response() if callable(self.response) else self.response
+
+
 def test_custom_endpoint_is_reached(monkeypatch) -> None:
     monkeypatch.setenv("PLUMB_PROVIDER", "custom")
     monkeypatch.setenv("PLUMB_CUSTOM_URL", "http://127.0.0.1:11434/v1/chat/completions")
@@ -253,20 +283,16 @@ def test_custom_endpoint_is_reached(monkeypatch) -> None:
     monkeypatch.setenv("PLUMB_CUSTOM_KEY", "sk-secret")
     seen: dict = {}
 
-    def fake_post(url, headers=None, json=None, timeout=None, **kwargs):
-        seen["url"] = url
-        seen["headers"] = headers
-        seen["json"] = json
-        seen["kwargs"] = kwargs
-        return _ok_openai()
-
-    monkeypatch.setattr(llm.httpx, "post", fake_post)
+    monkeypatch.setattr(llm.httpx, "Client", _FakeClient(seen, _ok_openai))
     assert llm.complete("s", "u") == "ok"
     assert "127.0.0.1" in seen["url"]
     assert seen["headers"]["Authorization"] == "Bearer sk-secret"
     assert seen["headers"]["Host"] == "127.0.0.1:11434"
     assert seen["json"]["model"] == "llama3.2"
-    assert seen["kwargs"].get("follow_redirects") is False
+    # The whole point of the pinned path: TLS validates the name, the socket
+    # goes to the address already resolved and checked.
+    assert seen["kwargs"]["extensions"] == {"sni_hostname": "127.0.0.1"}
+    assert seen["client_kwargs"].get("follow_redirects") is False
 
 
 def test_custom_429_is_a_rate_limit(monkeypatch, _slept) -> None:
@@ -274,7 +300,9 @@ def test_custom_429_is_a_rate_limit(monkeypatch, _slept) -> None:
     monkeypatch.setenv("PLUMB_CUSTOM_URL", "http://127.0.0.1:11434/v1/chat/completions")
     monkeypatch.setenv("PLUMB_CUSTOM_MODEL", "llama3.2")
     recorder = _Recorder([_response(429, headers={"retry-after": "1"})])
-    monkeypatch.setattr(llm.httpx, "post", recorder)
+    # Patch the Client, not httpx.post: the pinned path uses a Client, and
+    # patching the wrong one sent this test at a real Ollama on this machine.
+    monkeypatch.setattr(llm.httpx, "Client", _FakeClient({}, lambda: recorder(None)))
 
     with pytest.raises(llm.RateLimitError):
         llm.complete("s", "u")
@@ -336,3 +364,70 @@ def test_two_sessions_hold_different_custom_endpoints(monkeypatch) -> None:
     assert a.endpoint_url != b.endpoint_url
     assert "key-a" not in str(llm.catalog(a))
     assert "key-b" not in str(llm.catalog(b))
+
+
+def test_a_chart_name_plumb_cannot_build_does_not_kill_the_plan() -> None:
+    """"Give me a candlestick" used to fail a five-item enum and lose the answer.
+
+    The SQL was fine. The plan was discarded because of a chart name, and the
+    user saw "the model returned a response plumb could not read".
+    """
+    from backend.models import Plan
+
+    plan = Plan.model_validate(
+        {"route": "answer", "sql": "SELECT 1", "chart": "candlestick"}
+    )
+
+    assert plan.route == "answer"
+    assert plan.sql == "SELECT 1"
+    assert plan.chart == "candlestick"  # kept, so the card can name it
+
+
+def test_an_unbuildable_chart_name_is_simply_not_built() -> None:
+    from backend import chart
+    from backend.models import Plan
+
+    plan = Plan(
+        route="answer", sql="S", chart="histogram", chart_x="a", chart_y=["b"]
+    )
+    spec = chart.build_spec(
+        plan, ["a", "b"], [["x", 1], ["y", 2]], {"a": "VARCHAR", "b": "BIGINT"}
+    )
+
+    assert spec is None  # it belongs in chart_spec, where chart_guard checks it
+
+
+def test_the_plan_schema_does_not_constrain_the_chart_name() -> None:
+    """Under strict mode an enum here would forbid naming a histogram at all."""
+    from backend.plan_schema import PLAN_JSON_SCHEMA
+
+    chart_field = PLAN_JSON_SCHEMA["properties"]["chart"]
+    assert "enum" not in chart_field
+
+
+def test_a_refused_key_is_parked_rather_than_retried(monkeypatch) -> None:
+    """402 "payment required" does not heal in a minute the way a 429 does."""
+    monkeypatch.setenv("PLUMB_PROVIDER", "custom")
+    monkeypatch.setenv("PLUMB_CUSTOM_URL", "http://127.0.0.1:11434/v1/chat/completions")
+    monkeypatch.setenv("PLUMB_CUSTOM_MODEL", "llama3.2")
+    monkeypatch.setattr(
+        llm.httpx,
+        "Client",
+        _FakeClient({}, lambda: _response(402, body='{"message":"Payment required"}')),
+    )
+
+    with pytest.raises(llm.ProviderAuthError):
+        llm.complete("s", "u")
+
+
+def test_the_pinned_path_goes_through_a_client(monkeypatch) -> None:
+    """httpx.post takes no `extensions`, so the module function raised TypeError.
+
+    Every preset and every custom endpoint was broken in production while this
+    suite stayed green, because the tests patched httpx.post and never saw the
+    real signature.
+    """
+    import inspect
+
+    assert "extensions" not in inspect.signature(httpx.post).parameters
+    assert "extensions" in inspect.signature(httpx.Client.post).parameters

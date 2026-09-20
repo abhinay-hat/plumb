@@ -78,6 +78,15 @@ class ProviderUnavailableError(LLMError):
     """
 
 
+class ProviderAuthError(LLMError):
+    """The key is refused or the account cannot pay. Retrying changes nothing.
+
+    Separate from a rate limit, which clears on its own. A 401/402/403 clears
+    when somebody edits a billing page, so the router parks this candidate for
+    a long time instead of spending a call on it every turn.
+    """
+
+
 class RateLimitError(LLMError):
     """The provider was busy. The prompt was fine; nothing was answered.
 
@@ -408,14 +417,19 @@ def _pinned_post(
     netloc = f"{ip_literal}:{parsed.port}" if parsed.port else ip_literal
     pinned = urlunparse(parsed._replace(netloc=netloc))
     host_header = f"{host}:{parsed.port}" if parsed.port else host
-    return httpx.post(
-        pinned,
-        headers={**headers, "Host": host_header},
-        json=payload,
-        timeout=TIMEOUT_SECONDS,
-        follow_redirects=False,
-        extensions={"sni_hostname": host},
-    )
+    # Through a Client, not httpx.post: the module-level helper takes no
+    # `extensions`, so this raised TypeError before a single byte was sent —
+    # every preset and every custom endpoint, and no test caught it because
+    # they all monkeypatch httpx.post and never see the real signature.
+    # sni_hostname is what makes TLS validate against the name while the
+    # connection goes to the address already resolved and checked.
+    with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=False) as client:
+        return client.post(
+            pinned,
+            headers={**headers, "Host": host_header},
+            json=payload,
+            extensions={"sni_hostname": host},
+        )
 
 
 def _scrub(message: str, key: str | None) -> str:
@@ -536,6 +550,13 @@ def _complete_once(
             )
             transient += 1
             continue
+        if response.status_code in (401, 402, 403):
+            raise ProviderAuthError(
+                _scrub(
+                    f"{provider} returned {response.status_code}: {response.text}",
+                    key,
+                )
+            )
         if response.status_code >= 400:
             raise LLMError(
                 _scrub(
@@ -610,6 +631,13 @@ def complete(system: str, user: str, json_mode: bool = True) -> str:
             last = e
             health.record_failure(e.retry_after)
             log.warning("%s is rate-limited, trying the next model", candidate.name)
+            continue
+        except ProviderAuthError as e:
+            last = e
+            health.record_failure(router.AUTH_COOLDOWN_SECONDS)
+            log.warning(
+                "%s refused the key or the account cannot pay; parking it", candidate.name
+            )
             continue
         except ProviderUnavailableError as e:
             last = e

@@ -511,7 +511,12 @@ def _ask(question: str, session: Session) -> AskResponse:
         spec, chart_kind = chart.build_spec_for_question(
             question, plan, columns, rows, dtypes
         )
-    if spec is None and _wants_chart(question, plan):
+    if spec is None and advice.kind != "none":
+        # Not gated on the question or the plan naming a chart. Whether an
+        # answer has a shape is a property of the rows, and `recommend` has
+        # already measured it — leaving that unrendered produced a card that
+        # said "better as a bar" above an empty space, and made charts appear
+        # or not depending on whether the model happened to ask for one.
         spec = chart.build_from_advice(advice, columns, rows, dtypes)
         if spec is not None:
             chart_kind = advice.kind
@@ -526,6 +531,12 @@ def _ask(question: str, session: Session) -> AskResponse:
     if spec is not None:
         spec = _inject_chart_data(spec, columns, rows)
     advice.rendered = chart_kind
+    if spec is None and plan.chart not in chart.BUILDABLE and plan.chart != "none":
+        # The model named a chart plumb could not draw and gave no usable spec
+        # for it. Saying which one, in the model's own word, beats an empty
+        # space: "candlestick" is information, and it is not a word plumb keeps
+        # a list of — it arrived with the plan.
+        advice.unsupported = plan.chart
 
     session.history.append({"question": question, "route": "answer", "sql": sql})
     return AskResponse(

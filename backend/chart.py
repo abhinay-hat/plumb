@@ -17,6 +17,10 @@ from backend.models import ChartAdvice, Plan
 
 MAX_ROWS = 50
 MIN_ROWS = 2
+# The marks build_spec assembles by hand. Not the limit of what plumb can draw:
+# anything else the model names travels as a Vega-Lite spec in chart_spec and is
+# validated by chart_guard against Vega's own mark vocabulary.
+BUILDABLE = {"bar": "bar", "line": "line", "pie": "arc", "scatter": "point"}
 # Past this many marks the value labels overlap each other and the chart is
 # harder to read with them than without.
 LABEL_MAX_POINTS = 24
@@ -199,7 +203,7 @@ def build_spec(
     compact: bool = False,
 ) -> dict | None:
     """Vega-Lite spec without `data` — the caller injects the rows."""
-    if plan.chart == "none" or not plan.chart_x or not plan.chart_y:
+    if plan.chart not in BUILDABLE or not plan.chart_x or not plan.chart_y:
         return None
     if not (MIN_ROWS <= len(rows) <= MAX_ROWS):
         return None
@@ -216,7 +220,7 @@ def build_spec(
         return vega_type(dtypes.get(key, ""))
 
     y = ys[0]
-    mark = {"bar": "bar", "line": "line", "pie": "arc", "scatter": "point"}[plan.chart]
+    mark = BUILDABLE[plan.chart]
     title = None if compact else f"{y} by {x}"
     fmt = number_format(_column_values(columns, rows, y))
     value_text = {"field": y, "type": "quantitative", "format": fmt}

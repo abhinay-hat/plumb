@@ -110,6 +110,19 @@ PRESETS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        # Fastest of the free tiers by a wide margin, which matters because the
+        # planner call is the whole latency budget of a turn.
+        "id": "cerebras",
+        "label": "Cerebras",
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "key_env": "CEREBRAS_API_KEY",
+        "models": (
+            {"id": "gpt-oss-120b", "label": "GPT-OSS 120B"},
+            {"id": "llama-3.3-70b", "label": "Llama 3.3 70B"},
+            {"id": "qwen-3.8-27b", "label": "Qwen 3.8 27B"},
+        ),
+    },
+    {
         # The inference router, not a single vendor: one token reaches whatever
         # open-weight models the free tier is serving that week.
         "id": "huggingface",

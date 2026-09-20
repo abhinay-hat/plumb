@@ -43,6 +43,9 @@ MODELS_PER_PROVIDER = 2
 UNMEASURED_MS = 20_000.0
 # What a provider gets for a 429 that arrives without a Retry-After header.
 DEFAULT_COOLDOWN_SECONDS = 60.0
+# A refused key or an unpaid account does not heal on its own, so retrying it
+# every minute only spends a call per turn to learn the same thing.
+AUTH_COOLDOWN_SECONDS = 3600.0
 
 
 @dataclass(frozen=True)

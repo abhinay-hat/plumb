@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Literal
 
 
@@ -74,12 +74,29 @@ class Plan(BaseModel):
     clarify_term: str | None = None  # which term this clarification is about
     refuse_reason: str | None = None
     reply: str | None = None  # route == "chat"
-    chart: Literal["bar", "line", "pie", "scatter", "none"] = "none"
+    # Deliberately not a Literal. "Give me a candlestick" made the model answer
+    # chart: "candlestick", which failed a five-item enum, failed the whole
+    # Plan, and surfaced as "the model returned a response plumb could not
+    # read" — the SQL was fine and the user lost it anyway. A chart name plumb
+    # cannot hand-build is not a malformed plan: it is a chart that belongs in
+    # chart_spec, where chart_guard validates it against Vega's own marks.
+    # `chart.BUILDABLE` is what build_spec assembles; anything else falls
+    # through to the spec, and its name is the model's word for what was asked.
+    chart: str = "none"
     chart_x: str | None = None
     chart_y: list[str] | None = None
     chart_spec: dict | None = None  # model-authored Vega-Lite, validated before use
     panels: list[Panel] | None = None  # route == "dashboard"
     guard_code: str | None = None  # why the planner gave up, when it did
+
+    @field_validator("chart", mode="before")
+    @classmethod
+    def _normalise_chart(cls, value: object) -> object:
+        if value is None:
+            return "none"
+        if isinstance(value, str):
+            return value.strip().lower() or "none"
+        return value
 
 
 class AskResponse(BaseModel):

@@ -21,10 +21,11 @@ PLAN_JSON_SCHEMA: dict = {
         "clarify_term": {"type": ["string", "null"]},
         "refuse_reason": {"type": ["string", "null"]},
         "reply": {"type": ["string", "null"]},
-        "chart": {
-            "type": "string",
-            "enum": ["bar", "line", "pie", "scatter", "none"],
-        },
+        # No enum on purpose. Under strict mode an enum here would forbid the
+        # model from ever naming a histogram or a candlestick, and without
+        # strict mode it named one anyway and broke the parse. The name is free;
+        # what can be drawn is decided by chart.BUILDABLE and chart_guard.
+        "chart": {"type": "string"},
         "chart_x": {"type": ["string", "null"]},
         "chart_y": {
             "anyOf": [

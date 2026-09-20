@@ -210,9 +210,16 @@ def test_greeting_routes_to_chat_with_no_sql(session, monkeypatch) -> None:
     assert response.rows is None
 
 
-def test_chart_follow_up_infers_bar_when_plan_leaves_chart_none(
+def test_a_shapely_result_is_charted_without_being_asked(
     session, monkeypatch
 ) -> None:
+    """Whether an answer has a shape is a property of the rows, not the question.
+
+    This used to wait to be asked: a grouped count rendered nothing until the
+    user said "chart", so a chart appeared or not depending on whether the
+    model happened to name one. The brief asks for a visual "where the question
+    calls for one", and a category against a measure is that case.
+    """
     sql = (
         'SELECT "department", COUNT(*) AS "headcount" '
         'FROM employees GROUP BY "department" LIMIT 1000'
@@ -222,13 +229,30 @@ def test_chart_follow_up_infers_bar_when_plan_leaves_chart_none(
 
     first = pipeline.ask("How many employees in each department?", session)
     assert first.route == "answer"
-    assert first.chart is None
+    assert first.chart is not None
+    assert first.chart_advice is not None
+    assert first.chart_advice.rendered == first.chart_advice.kind
 
+    # Naming a chart explicitly still works, and still wins.
     second = pipeline.ask("can you give me in bar chart", session)
     assert second.route == "answer"
     assert second.chart is not None
     mark = second.chart["layer"][0].get("mark")
     assert (mark.get("type") if isinstance(mark, dict) else mark) == "bar"
+
+
+def test_a_single_number_is_still_left_as_a_table(session, monkeypatch) -> None:
+    """Default-charting must not mean charting a result with no shape."""
+    _stub(
+        monkeypatch,
+        [Plan(route="answer", sql="SELECT count(*) AS headcount FROM employees")],
+    )
+
+    response = pipeline.ask("how many employees are there?", session)
+
+    assert response.route == "answer"
+    assert response.chart is None
+    assert response.chart_advice is not None and response.chart_advice.kind == "none"
 
 
 def test_valid_chart_spec_is_rendered(session, monkeypatch) -> None:
