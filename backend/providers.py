@@ -317,6 +317,19 @@ def models_for(
     return found
 
 
+def strict_json(provider_id: str, model_id: str) -> bool:
+    """Whether plumb can force this model to answer in the Plan's exact schema.
+
+    Groq and OpenRouter accept `response_format: json_schema` with `strict`
+    for gpt-oss models, which constrains the reply to the routing contract.
+    Everything else gets `json_object`, which asks for JSON and hopes. That
+    difference decides whether a turn parses, so it belongs in the ranking:
+    a model that cannot be constrained answered in prose often enough to
+    surface as "the model returned a response plumb could not read".
+    """
+    return provider_id in ("groq", "openrouter") and "gpt-oss" in model_id.lower()
+
+
 def find_preset(preset_id: str) -> dict[str, Any] | None:
     for item in PRESETS:
         if item["id"] == preset_id:

@@ -29,6 +29,7 @@ from backend.providers import (
     models_for,
     ollama_base,
     preset_url,
+    strict_json,
     visible_presets,
 )
 
@@ -59,6 +60,11 @@ class Candidate:
     preset_id: str | None = None
     context: int = 0
     json_native: bool = False
+
+    @property
+    def strict(self) -> bool:
+        """Whether the reply can be constrained to the Plan schema outright."""
+        return strict_json(self.preset_id or self.provider, self.model)
 
     @property
     def name(self) -> str:
@@ -121,7 +127,23 @@ def routing_enabled() -> bool:
 
 
 def _entries(provider_id: str, fallback=None) -> list[dict[str, str]]:
-    return models_for(provider_id, fallback=fallback)[:MODELS_PER_PROVIDER]
+    """The best few models from one provider, not the first few alphabetically.
+
+    `models_for` returns the roster sorted by label so the picker reads
+    sensibly. Taking the head of that list to build the pool meant
+    `openai/gpt-oss-20b` — the one Groq model whose reply can be constrained to
+    the Plan schema — lost its slot to `allam-2-7b`, and every turn ran on a
+    model that answers prose often enough to break the parse.
+    """
+    rows = models_for(provider_id, fallback=fallback)
+    rows.sort(
+        key=lambda row: (
+            not strict_json(provider_id, row["id"]),
+            row.get("json_native") != "1",
+            -int(row.get("context") or 0),
+        )
+    )
+    return rows[:MODELS_PER_PROVIDER]
 
 
 def _as_candidate(provider: str, row: dict[str, str], **extra) -> Candidate:
@@ -178,6 +200,9 @@ def rank(candidates: list[Candidate], now: float | None = None) -> list[Candidat
         return (
             health.cooling(stamp),  # False sorts first
             health.failures,
+            # A schema we can enforce beats a bigger context window: an
+            # unparseable reply is not a slower answer, it is no answer.
+            -int(c.strict),
             -int(c.json_native),  # advertised JSON beats hoping
             health.ewma_ms if health.ewma_ms is not None else UNMEASURED_MS,
             -c.context,
