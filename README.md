@@ -10,7 +10,7 @@ or asks what your term means, or tells you the columns cannot support the questi
 **It does not guess.**
 
 [![live](https://img.shields.io/badge/demo-plumb.iamabhinay.com-0a7?style=flat-square)](https://plumb.iamabhinay.com)
-![tests](https://img.shields.io/badge/tests-265%20passing-0a7?style=flat-square)
+[![ci](https://github.com/abhinay-hat/plumb/actions/workflows/ci.yml/badge.svg)](https://github.com/abhinay-hat/plumb/actions/workflows/ci.yml)
 ![eval](https://img.shields.io/badge/routing%20eval-27%2F30-0a7?style=flat-square)
 ![python](https://img.shields.io/badge/python-3.12-3776ab?style=flat-square)
 ![duckdb](https://img.shields.io/badge/DuckDB-in--process-fff000?style=flat-square)

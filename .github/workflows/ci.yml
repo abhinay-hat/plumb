@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # No provider key is set here on purpose. The suite must pass without
+      # one: tests/conftest.py strips every key and disables model discovery,
+      # so a green run here proves the deterministic modules stand on their own.
+      - run: pytest -q
+
+  frontend:
+    name: build and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      # tsc -b runs first, so a types.ts that has drifted from models.py fails
+      # here rather than in someone's browser.
+      - run: npm run build
+        working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
+
+  no-agent-attribution:
+    name: commit hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+      # .githooks/commit-msg strips these locally, but core.hooksPath is local
+      # config — a fresh clone that skips `make setup` has no hook at all.
+      # GitHub writes an attribution trailer into a contributor-index row that
+      # a history rewrite does not retract, which is why this is worth a job.
+      - name: Reject agent attribution trailers
+        run: |
+          if git log -50 --format='%B' | grep -inE '^(co-authored-by|claude-session):'; then
+            echo "::error::agent attribution trailer found — see .githooks/commit-msg"
+            exit 1
+          fi
+          echo "no attribution trailers in the last 50 commits"
